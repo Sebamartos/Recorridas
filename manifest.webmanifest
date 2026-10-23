@@ -1,0 +1,16 @@
+{
+  "name": "Recorridas de cultivos",
+  "short_name": "Recorridas",
+  "description": "Notas de recorrida por lote: texto, fotos, audio y video georreferenciados.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f2",
+  "theme_color": "#1b5e20",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
