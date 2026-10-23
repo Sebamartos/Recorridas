@@ -1,6 +1,6 @@
 // Guarda la app en el dispositivo para que abra sin señal.
 // Subí VERSION en cada cambio para que los teléfonos tomen la versión nueva.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const MAX_TILES = 3000;
@@ -65,7 +65,7 @@ self.addEventListener('fetch', (event) => {
 
   // Archivos de la app: primero la red (para tomar cambios), si no hay señal, lo guardado.
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: 'no-cache' })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();
