@@ -103,6 +103,7 @@ async function viewHome() {
       <div class="row">
         <select id="campaign" class="grow" aria-label="Campaña">
           ${campaigns.map((c) => `<option value="${c.id}" ${campaign && c.id === campaign.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+          ${campaigns.length ? '' : '<option value="" selected>Sin campañas</option>'}
           <option value="__new">＋ Nueva campaña…</option>
         </select>
       </div>
@@ -121,17 +122,24 @@ async function viewHome() {
         <label class="btn">Importar lotes (KML o KMZ)<input id="kml" type="file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>
       ` : `
         <div class="empty">Creá tu primera campaña para empezar, por ejemplo “2026/27”.</div>
+        <button id="first-campaign" class="btn primary">＋ Crear campaña</button>
       `}
     </main>`;
 
+  async function newCampaign() {
+    const name = (prompt('Nombre de la campaña (ej: 2026/27)') || '').trim();
+    if (name) {
+      const c = { id: db.uid(), name, createdAt: Date.now() };
+      await db.put('campaigns', c);
+      await db.setSetting('campaignId', c.id);
+    }
+    render();
+  }
+
   document.getElementById('campaign').addEventListener('change', async (e) => {
     if (e.target.value === '__new') {
-      const name = (prompt('Nombre de la campaña (ej: 2026/27)') || '').trim();
-      if (name) {
-        const c = { id: db.uid(), name, createdAt: Date.now() };
-        await db.put('campaigns', c);
-        await db.setSetting('campaignId', c.id);
-      }
+      await newCampaign();
+      return;
     } else {
       await db.setSetting('campaignId', e.target.value);
     }
@@ -139,7 +147,7 @@ async function viewHome() {
   });
 
   if (!campaign) {
-    if (!campaigns.length) document.getElementById('campaign').value = '__new';
+    document.getElementById('first-campaign').addEventListener('click', newCampaign);
     return;
   }
 
