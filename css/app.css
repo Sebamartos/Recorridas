@@ -137,3 +137,11 @@ label > input, label > textarea, label > select { color: var(--text); font-size:
 
 .lightbox { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.92); display: flex; align-items: center; justify-content: center; }
 .lightbox img { max-width: 100%; max-height: 100%; }
+
+.actions, .pending-box { display: flex; flex-direction: column; gap: 6px; }
+.pending-box { padding: 12px 14px; border-radius: 12px; border: 1px solid #f0c36d; background: #fff8e6; color: #3b2a00; }
+@media (prefers-color-scheme: dark) { .pending-box { background: #2b2410; color: #f5e6c0; border-color: #6b5314; } }
+.action { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 15px; color: inherit; }
+.action input { width: 20px; height: 20px; flex: none; }
+.action.done { text-decoration: line-through; opacity: .6; }
+.late { color: var(--danger); font-weight: 600; }

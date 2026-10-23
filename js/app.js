@@ -1,11 +1,10 @@
 import * as db from './db.js';
 import { parseLotsFile, containsPoint, areaHa, getPosition } from './geo.js';
+import { CROPS, WEEDS, cropKey, cropName } from './crops.js';
 
 const L = window.L;
 const app = document.getElementById('app');
 
-const PHENOLOGY = ['VE', 'VC', 'V1', 'V2', 'V3', 'V4', 'V6', 'V8', 'V10', 'VT', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'Macollaje', 'Encañazón', 'Espigazón', 'Floración', 'Llenado', 'Madurez'];
-const PESTS = ['Chinche', 'Isoca bolillera', 'Oruga militar', 'Cogollero', 'Trips', 'Arañuela', 'Pulgón', 'Chicharrita', 'Mancha ojo de rana', 'Roya', 'Tizón', 'Malezas', 'Sin plagas'];
 const DAMAGE = [
   ['', '—'],
   ['0', 'Sin daño'],
@@ -91,7 +90,11 @@ async function viewHome() {
   const stats = {};
   for (const lot of lots) {
     const notes = await db.byIndex('notes', 'lotId', lot.id);
-    stats[lot.id] = { count: notes.length, last: notes.reduce((m, n) => Math.max(m, n.createdAt), 0) };
+    stats[lot.id] = {
+      count: notes.length,
+      last: notes.reduce((m, n) => Math.max(m, n.createdAt), 0),
+      pending: notes.reduce((c, n) => c + (n.actions || []).filter((a) => !a.done).length, 0),
+    };
   }
 
   app.innerHTML = `
@@ -115,8 +118,9 @@ async function viewHome() {
         <ul class="list">
           ${lots.map((l) => `
             <li><a href="#/lote/${l.id}">
-              <div><strong>${esc(l.name)}</strong>${l.crop ? ` · ${esc(l.crop)}` : ''}</div>
-              <div class="muted">${areaHa(l.geometry).toFixed(1)} ha · ${stats[l.id].count} notas${stats[l.id].last ? ` · última ${fmtDate(stats[l.id].last, false)}` : ''}</div>
+              <div><strong>${esc(l.name)}</strong>${l.crop ? ` · ${esc(cropName(cropKey(l.crop)) || l.crop)}` : ''}</div>
+              <div class="muted">${areaHa(l.geometry).toFixed(1)} ha · ${stats[l.id].count} nota${stats[l.id].count === 1 ? "" : "s"}${stats[l.id].last ? ` · última ${fmtDate(stats[l.id].last, false)}` : ''}</div>
+              ${stats[l.id].pending ? `<div class="small late">${stats[l.id].pending} pendiente${stats[l.id].pending > 1 ? 's' : ''}</div>` : ''}
             </a></li>`).join('') || '<li class="empty">Todavía no hay lotes en esta campaña.</li>'}
         </ul>
         <label class="btn">Importar lotes (KML o KMZ)<input id="kml" type="file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>
@@ -204,8 +208,15 @@ async function viewLot(lotId) {
       <button class="icon-btn" id="lot-menu" aria-label="Opciones del lote">⋯</button>
     </header>
     <main class="page">
-      <div class="muted">${lot.crop ? `Cultivo: <strong>${esc(lot.crop)}</strong> · ` : ''}${areaHa(lot.geometry).toFixed(1)} ha</div>
+      <div class="row">
+        <select id="lot-crop" class="grow" aria-label="Cultivo del lote">
+          <option value="">Cultivo sin definir</option>
+          ${Object.entries(CROPS).map(([k, c]) => `<option value="${k}" ${cropKey(lot.crop) === k ? 'selected' : ''}>${c.name}</option>`).join('')}
+        </select>
+        <span class="muted">${areaHa(lot.geometry).toFixed(1)} ha</span>
+      </div>
       <div id="map" class="map small"></div>
+      ${pendingBox(notes)}
       <a class="btn primary" href="#/nota/nueva/${lot.id}">＋ Nueva nota</a>
       <section class="timeline">
         ${notes.map((n) => noteCard(n, mediaByNote[n.id])).join('') || '<div class="empty">Sin notas todavía.</div>'}
@@ -221,15 +232,18 @@ async function viewLot(lotId) {
       .bindPopup(`${fmtDate(n.createdAt)}<br>${esc((n.text || '').slice(0, 80))}`).addTo(map));
   }
 
+  document.getElementById('lot-crop').addEventListener('change', async (e) => {
+    lot.crop = e.target.value;
+    await db.put('lots', lot);
+    toast(e.target.value ? `Cultivo: ${cropName(e.target.value)}` : 'Cultivo sin definir');
+  });
+
   document.getElementById('lot-menu').addEventListener('click', async () => {
-    const choice = prompt('Escribí 1 para cambiar el cultivo, 2 para renombrar el lote, 3 para borrar el lote');
+    const choice = prompt('Escribí 1 para renombrar el lote, 2 para borrar el lote');
     if (choice === '1') {
-      const crop = prompt('Cultivo del lote (ej: Soja 1ra, Maíz tardío)', lot.crop || '');
-      if (crop !== null) { lot.crop = crop.trim(); await db.put('lots', lot); render(); }
-    } else if (choice === '2') {
       const name = prompt('Nombre del lote', lot.name);
       if (name && name.trim()) { lot.name = name.trim(); await db.put('lots', lot); render(); }
-    } else if (choice === '3') {
+    } else if (choice === '2') {
       if (confirm(`¿Borrar el lote “${lot.name}” y todas sus notas? No se puede deshacer.`)) {
         await db.deleteLot(lot.id);
         location.hash = '#/';
@@ -243,7 +257,9 @@ async function viewLot(lotId) {
 function noteCard(n, media) {
   const chips = [
     n.phenology && `<span class="chip">${esc(n.phenology)}</span>`,
-    n.pest && `<span class="chip warn">${esc(n.pest)}</span>`,
+    n.pest && `<span class="chip warn">🐛 ${esc(n.pest)}</span>`,
+    n.disease && `<span class="chip warn">🍂 ${esc(n.disease)}</span>`,
+    n.weed && `<span class="chip warn">🌿 ${esc(n.weed)}</span>`,
     n.damage !== '' && n.damage != null && `<span class="chip dmg-${esc(n.damage)}">Daño: ${esc((DAMAGE.find((d) => d[0] === n.damage) || [])[1])}</span>`,
   ].filter(Boolean).join('');
   const photos = media.filter((m) => m.type === 'photo');
@@ -258,6 +274,8 @@ function noteCard(n, media) {
       </header>
       ${chips ? `<div class="chips">${chips}</div>` : ''}
       ${n.text ? `<p class="text">${esc(n.text)}</p>` : ''}
+      ${(n.actions || []).length ? `<div class="actions"><div class="small muted">Próximas acciones${n.due ? ` · para el ${fmtDay(n.due)}` : ''}</div>
+        ${n.actions.map((a) => `<label class="action ${a.done ? 'done' : ''}"><input type="checkbox" data-action="${n.id}:${a.id}" ${a.done ? 'checked' : ''}> ${esc(a.text)}</label>`).join('')}</div>` : ''}
       ${photos.length ? `<div class="thumbs">${photos.map((m) => `<img src="${blobUrl(m.blob)}" alt="Foto" data-full loading="lazy">`).join('')}</div>` : ''}
       ${audios.map((m) => `<audio controls preload="metadata" src="${blobUrl(m.blob)}"></audio>`).join('')}
       ${videos.map((m) => `<video controls playsinline preload="metadata" src="${blobUrl(m.blob)}"></video>`).join('')}
@@ -265,7 +283,37 @@ function noteCard(n, media) {
     </article>`;
 }
 
+function pendingBox(notes) {
+  const items = notes.flatMap((n) => (n.actions || []).filter((a) => !a.done).map((a) => ({ n, a })));
+  if (!items.length) return '';
+  return `<section class="pending-box">
+    <strong>Pendientes (${items.length})</strong>
+    ${items.map(({ n, a }) => `<label class="action"><input type="checkbox" data-action="${n.id}:${a.id}"> ${esc(a.text)}
+      <span class="muted small">${n.due ? `para el ${fmtDay(n.due)}` : `desde ${fmtDate(n.createdAt, false)}`}${n.due && n.due < today() ? ' · <b class="late">vencido</b>' : ''}</span></label>`).join('')}
+  </section>`;
+}
+
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function fmtDay(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+
 function bindNoteCards() {
+  app.querySelectorAll('[data-action]').forEach((box) => box.addEventListener('change', async () => {
+    const [noteId, actionId] = box.dataset.action.split(':');
+    const note = await db.get('notes', noteId);
+    const action = note && (note.actions || []).find((a) => a.id === actionId);
+    if (!action) return;
+    action.done = box.checked;
+    action.doneAt = box.checked ? Date.now() : null;
+    await db.put('notes', note);
+    render();
+  }));
   app.querySelectorAll('[data-delete]').forEach((btn) => btn.addEventListener('click', async () => {
     if (confirm('¿Borrar esta nota? No se puede deshacer.')) {
       await db.deleteNote(btn.dataset.delete);
@@ -316,18 +364,37 @@ async function viewNewNote(lotId) {
         <textarea id="text" rows="5" placeholder="Estado del cultivo, plagas, malezas, humedad…"></textarea>
       </label>
       <div class="grid3">
-        <label>Estado fenológico
-          <input id="phenology" list="phen-list" placeholder="ej: V6, R3">
-          <datalist id="phen-list">${PHENOLOGY.map((p) => `<option value="${p}">`).join('')}</datalist>
+        <label>Cultivo
+          <select id="crop">
+            <option value="">Sin definir</option>
+            ${Object.entries(CROPS).map(([k, c]) => `<option value="${k}" ${cropKey(lot.crop) === k ? 'selected' : ''}>${c.name}</option>`).join('')}
+          </select>
         </label>
-        <label>Plaga / enfermedad
-          <input id="pest" list="pest-list" placeholder="ej: Chinche">
-          <datalist id="pest-list">${PESTS.map((p) => `<option value="${p}">`).join('')}</datalist>
+        <label><span>Estado fenológico <span id="scale" class="small"></span></span>
+          <select id="phenology"></select>
+        </label>
+        <label>Plaga
+          <input id="pest" list="pest-list" placeholder="Elegí o escribí">
+          <datalist id="pest-list"></datalist>
+        </label>
+        <label>Enfermedad
+          <input id="disease" list="disease-list" placeholder="Elegí o escribí">
+          <datalist id="disease-list"></datalist>
+        </label>
+        <label>Maleza
+          <input id="weed" list="weed-list" placeholder="Elegí o escribí">
+          <datalist id="weed-list">${WEEDS.map((w) => `<option value="${esc(w)}">`).join('')}</datalist>
         </label>
         <label>Nivel de daño
           <select id="damage">${DAMAGE.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>
         </label>
       </div>
+      <label>Próximas acciones / a prestar atención (una por línea)
+        <textarea id="actions" rows="3" placeholder="Aplicar insecticida en cabecera norte&#10;Volver a mirar chinche en 7 días"></textarea>
+      </label>
+      <label>Revisar para el
+        <input id="due" type="date">
+      </label>
       <div class="media-buttons">
         <label class="btn">📷 Foto<input id="photo" type="file" accept="image/*" capture="environment" multiple hidden></label>
         <label class="btn">🎥 Video<input id="video" type="file" accept="video/*" capture="environment" hidden></label>
@@ -336,6 +403,19 @@ async function viewNewNote(lotId) {
       <div id="pending" class="pending"></div>
       <button id="save" class="btn primary">Guardar nota</button>
     </main>`;
+
+  const options = (list) => list.map((v) => `<option value="${esc(v)}">`).join('');
+  function fillCropLists() {
+    const crop = CROPS[document.getElementById('crop').value];
+    document.getElementById('scale').textContent = crop ? `(${crop.scale})` : '';
+    document.getElementById('phenology').innerHTML = '<option value="">—</option>' +
+      (crop ? crop.phenology.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join('') : '');
+    const all = (field) => [...new Set(Object.values(CROPS).flatMap((c) => c[field]))];
+    document.getElementById('pest-list').innerHTML = options(crop ? crop.pests : all('pests'));
+    document.getElementById('disease-list').innerHTML = options(crop ? crop.diseases : all('diseases'));
+  }
+  fillCropLists();
+  document.getElementById('crop').addEventListener('change', fillCropLists);
 
   const gpsEl = document.getElementById('gps');
   getPosition().then((pos) => {
@@ -411,14 +491,21 @@ async function viewNewNote(lotId) {
       author: me,
       text: document.getElementById('text').value.trim(),
       phenology: document.getElementById('phenology').value.trim(),
+      crop: document.getElementById('crop').value,
       pest: document.getElementById('pest').value.trim(),
+      disease: document.getElementById('disease').value.trim(),
+      weed: document.getElementById('weed').value.trim(),
+      actions: document.getElementById('actions').value.split('\n').map((t) => t.trim()).filter(Boolean)
+        .map((text) => ({ id: db.uid(), text, done: false })),
+      due: document.getElementById('due').value,
       damage: document.getElementById('damage').value,
       lat: notePos ? notePos.lat : null,
       lng: notePos ? notePos.lng : null,
       accuracy: notePos ? notePos.accuracy : null,
     };
-    if (!note.text && !note.phenology && !note.pest && !note.damage && !pending.length) return alert('La nota está vacía.');
+    if (!note.text && !note.phenology && !note.pest && !note.disease && !note.weed && !note.actions.length && !note.damage && !pending.length) return alert('La nota está vacía.');
     await db.put('notes', note);
+    if (note.crop && cropKey(lot.crop) !== note.crop) { lot.crop = note.crop; await db.put('lots', lot); }
     for (const m of pending) await db.put('media', { id: db.uid(), noteId: note.id, ...m });
     toast('Nota guardada');
     location.hash = `#/lote/${lot.id}`;
