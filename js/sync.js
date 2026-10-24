@@ -62,9 +62,13 @@ async function afterLogin(user) {
   // La primera vez, lo que ya estaba cargado en este dispositivo se sube con este usuario.
   const key = `migrated-${user.id}`;
   if (!(await db.getSetting(key))) {
+    const local = (await db.all('campaigns')).filter((r) => !r.remote && !r.deleted).length +
+      (await db.all('notes')).filter((r) => !r.remote && !r.deleted).length;
+    const upload = !local || confirm('Este dispositivo tiene campañas o notas cargadas antes de iniciar sesión. ¿Subirlas a tu cuenta?\n\nAceptar: se suben.\nCancelar: se descartan (si eran pruebas o ya las subiste desde otro equipo).');
     for (const name of ['campaigns', 'lots', 'notes', 'media']) {
       for (const r of await db.all(name)) {
         if (r.remote) continue;
+        if (!upload) { await db.remove(name, r.id); continue; }
         if (name === 'notes' && !r.authorId) { r.authorId = user.id; r.author = r.author || p.name; }
         r.dirty = 1;
         await db.put(name, r);
