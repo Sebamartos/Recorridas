@@ -35,7 +35,7 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
-const APP_VERSION = '15';
+const APP_VERSION = '16';
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -108,6 +108,7 @@ async function viewHome() {
 
   app.innerHTML = `
     <header class="bar">
+      <img class="bar-logo" src="icons/mark.png" alt="Las Nazarenas">
       <h1>Recorridas</h1>
       ${sync.enabled ? '<a id="sync-badge" class="sync-badge" href="#/ajustes" aria-label="Estado de sincronización"></a>' : ''}
       <a class="icon-btn" href="#/ajustes" aria-label="Ajustes">⚙︎</a>
@@ -693,6 +694,7 @@ async function viewLogin() {
     app.innerHTML = `
       <header class="bar"><h1>Recorridas</h1></header>
       <main class="page form login">
+        <img class="login-logo" src="icons/logo.png" alt="Las Nazarenas">
         <p>${mode === 'login' ? 'Iniciá sesión para sincronizar tus recorridas.' : 'Creá tu cuenta. El primero en registrarse queda como administrador.'}</p>
         ${mode === 'signup' ? '<label>Tu nombre<input id="name" autocomplete="name"></label>' : ''}
         <label>Mail<input id="email" type="email" autocomplete="email" inputmode="email"></label>

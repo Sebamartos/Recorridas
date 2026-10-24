@@ -1,6 +1,6 @@
 // Guarda la app en el dispositivo para que abra sin señal.
 // Subí VERSION en cada cambio para que los teléfonos tomen la versión nueva.
-const VERSION = 'v15';
+const VERSION = 'v16';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const MAX_TILES = 3000;
@@ -25,6 +25,9 @@ const APP_FILES = [
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/apple-touch-icon.png',
+  'icons/icon-maskable.png',
+  'icons/logo.png',
+  'icons/mark.png',
 ];
 
 self.addEventListener('install', (event) => {

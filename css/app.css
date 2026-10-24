@@ -179,3 +179,6 @@ label > input, label > textarea, label > select { color: var(--text); font-size:
 .transcript { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: rgba(46,125,50,.08); }
 .transcript .summary { font-size: 15px; }
 .transcript details p { margin: 6px 0 0; white-space: pre-wrap; font-size: 14px; color: var(--muted); }
+
+.bar-logo { width: 40px; height: 40px; border-radius: 10px; background: #fff; flex: none; }
+.login-logo { display: block; width: 100%; max-width: 300px; margin: 8px auto 4px; padding: 12px; border-radius: 14px; background: #fff; }
