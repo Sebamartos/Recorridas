@@ -246,7 +246,16 @@ export async function mediaUrl(m) {
 export async function requestTranscription(mediaId) {
   if (!client) return null;
   const { data, error } = await client.functions.invoke('transcribe', { body: { media_id: mediaId } });
-  if (error || !data) return null;
+  if (error || !data) {
+    // Trae el detalle del error para poder mostrarlo.
+    let detail = error ? error.message : 'Sin respuesta';
+    try {
+      const body = await error.context.text();
+      try { detail = JSON.parse(body).error || JSON.parse(body).message || body; } catch { detail = body || detail; }
+      detail = `${error.context.status}: ${detail}`;
+    } catch {}
+    return { error: String(detail).slice(0, 300) };
+  }
   const m = await db.get('media', mediaId);
   if (m && data.transcript) {
     m.transcript = data.transcript;

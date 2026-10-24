@@ -430,7 +430,11 @@ function bindNoteCards() {
     btn.disabled = true;
     const res = await sync.requestTranscription(btn.dataset.transcribe);
     if (res && res.transcript) render();
-    else { btn.textContent = 'No se pudo transcribir. Reintentar'; btn.disabled = false; }
+    else {
+      btn.textContent = 'No se pudo transcribir. Reintentar';
+      btn.disabled = false;
+      if (res && res.error) btn.insertAdjacentHTML('afterend', `<div class="muted small">Error: ${esc(res.error)}</div>`);
+    }
   }));
   app.querySelectorAll('[data-action]').forEach((box) => box.addEventListener('change', async () => {
     const [noteId, actionId] = box.dataset.action.split(':');
