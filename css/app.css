@@ -169,3 +169,13 @@ label > input, label > textarea, label > select { color: var(--text); font-size:
 .popup-img { display: block; width: 180px; max-width: 100%; margin-top: 6px; border-radius: 6px; }
 .popup-audio { width: 220px; margin-top: 6px; }
 .pending-item .muted.small { flex: 1; }
+
+.sync-badge { color: #fff; text-decoration: none; font-size: 15px; padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,.12); white-space: nowrap; }
+.box { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.user { border-top: 1px solid var(--line); padding-top: 8px; }
+.user summary { cursor: pointer; padding: 4px 0; }
+.user .action { margin: 6px 0 6px 4px; }
+.login { max-width: 420px; }
+.transcript { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: rgba(46,125,50,.08); }
+.transcript .summary { font-size: 15px; }
+.transcript details p { margin: 6px 0 0; white-space: pre-wrap; font-size: 14px; color: var(--muted); }

@@ -3,6 +3,7 @@ import { parseLotsFile, containsPoint, areaHa, getPosition } from './geo.js';
 import { CROPS, WEEDS, cropKey, cropName } from './crops.js';
 import { combo, addCustomOption } from './combo.js';
 import { photoMeta, videoMeta } from './mediageo.js';
+import * as sync from './sync.js';
 
 const L = window.L;
 const app = document.getElementById('app');
@@ -63,8 +64,10 @@ function makeMap(el, { interactive = true } = {}) {
 
 // ---------- Datos ----------
 
+const live = (list) => list.filter((r) => !r.deleted);
+
 async function currentCampaign() {
-  const campaigns = (await db.all('campaigns')).sort((a, b) => b.createdAt - a.createdAt);
+  const campaigns = live(await db.all('campaigns')).sort((a, b) => b.createdAt - a.createdAt);
   let id = await db.getSetting('campaignId');
   if (!campaigns.find((c) => c.id === id)) id = campaigns[0] && campaigns[0].id;
   return { campaigns, campaign: campaigns.find((c) => c.id === id) || null };
@@ -72,7 +75,7 @@ async function currentCampaign() {
 
 async function lotsOf(campaignId) {
   if (!campaignId) return [];
-  const lots = await db.byIndex('lots', 'campaignId', campaignId);
+  const lots = live(await db.byIndex('lots', 'campaignId', campaignId));
   return lots.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
 }
 
@@ -90,9 +93,10 @@ async function author() {
 async function viewHome() {
   const { campaigns, campaign } = await currentCampaign();
   const lots = await lotsOf(campaign && campaign.id);
+  const admin = await sync.isAdmin();
   const stats = {};
   for (const lot of lots) {
-    const notes = await db.byIndex('notes', 'lotId', lot.id);
+    const notes = live(await db.byIndex('notes', 'lotId', lot.id));
     stats[lot.id] = {
       count: notes.length,
       last: notes.reduce((m, n) => Math.max(m, when(n)), 0),
@@ -103,6 +107,7 @@ async function viewHome() {
   app.innerHTML = `
     <header class="bar">
       <h1>Recorridas</h1>
+      ${sync.enabled ? '<a id="sync-badge" class="sync-badge" href="#/ajustes" aria-label="Estado de sincronización"></a>' : ''}
       <a class="icon-btn" href="#/ajustes" aria-label="Ajustes">⚙︎</a>
     </header>
     <main class="page">
@@ -110,7 +115,7 @@ async function viewHome() {
         <select id="campaign" class="grow" aria-label="Campaña">
           ${campaigns.map((c) => `<option value="${c.id}" ${campaign && c.id === campaign.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
           ${campaigns.length ? '' : '<option value="" selected>Sin campañas</option>'}
-          <option value="__new">＋ Nueva campaña…</option>
+          ${admin ? '<option value="__new">＋ Nueva campaña…</option>' : ''}
         </select>
       </div>
       ${campaign ? `
@@ -128,10 +133,10 @@ async function viewHome() {
             </a></li>`).join('') || '<li class="empty">Todavía no hay lotes en esta campaña.</li>'}
         </ul>
         <div id="no-match" class="empty" hidden>Ningún lote coincide con la búsqueda.</div>
-        <label class="btn">Importar lotes (KML o KMZ)<input id="kml" type="file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>
+        ${admin ? '<label class="btn">Importar lotes (KML o KMZ)<input id="kml" type="file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>' : ''}
       ` : `
-        <div class="empty">Creá tu primera campaña para empezar, por ejemplo “2026/27”.</div>
-        <button id="first-campaign" class="btn primary">＋ Crear campaña</button>
+        ${admin ? `<div class="empty">Creá tu primera campaña para empezar, por ejemplo “2026/27”.</div>
+        <button id="first-campaign" class="btn primary">＋ Crear campaña</button>` : `<div class="empty">Todavía no tenés lotes asignados. Pedile al administrador que te dé acceso${sync.enabled ? ' y tocá el ícono de sincronizar' : ''}.</div>`}
       `}
     </main>`;
 
@@ -139,7 +144,7 @@ async function viewHome() {
     const name = (prompt('Nombre de la campaña (ej: 2026/27)') || '').trim();
     if (name) {
       const c = { id: db.uid(), name, createdAt: Date.now() };
-      await db.put('campaigns', c);
+      await db.save('campaigns', c);
       await db.setSetting('campaignId', c.id);
     }
     render();
@@ -155,19 +160,23 @@ async function viewHome() {
     render();
   });
 
+  bindSyncBadge();
   if (!campaign) {
-    document.getElementById('first-campaign').addEventListener('click', newCampaign);
+    const first = document.getElementById('first-campaign');
+    if (first) first.addEventListener('click', newCampaign);
     return;
   }
 
-  document.getElementById('kml').addEventListener('change', async (e) => {
+  const kml = document.getElementById('kml');
+  if (kml) kml.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     try {
       const parsed = await parseLotsFile(file);
       for (const p of parsed) {
-        await db.put('lots', { id: db.uid(), campaignId: campaign.id, name: p.name, crop: '', geometry: p.geometry, createdAt: Date.now() });
+        await db.save('lots', { id: db.uid(), campaignId: campaign.id, name: p.name, crop: '', geometry: p.geometry, createdAt: Date.now() });
       }
+      afterChange();
       toast(`Se importaron ${parsed.length} lotes`);
       render();
     } catch (err) {
@@ -233,20 +242,21 @@ function norm(text) {
 
 async function viewLot(lotId) {
   const lot = await db.get('lots', lotId);
-  if (!lot) { location.hash = '#/'; return; }
-  const notes = (await db.byIndex('notes', 'lotId', lotId)).sort((a, b) => when(b) - when(a) || b.createdAt - a.createdAt);
+  if (!lot || lot.deleted) { location.hash = '#/'; return; }
+  const admin = await sync.isAdmin();
+  const notes = live(await db.byIndex('notes', 'lotId', lotId)).sort((a, b) => when(b) - when(a) || b.createdAt - a.createdAt);
   const mediaByNote = {};
-  for (const n of notes) mediaByNote[n.id] = await db.byIndex('media', 'noteId', n.id);
+  for (const n of notes) mediaByNote[n.id] = live(await db.byIndex('media', 'noteId', n.id));
 
   app.innerHTML = `
     <header class="bar">
       <a class="icon-btn" href="#/" aria-label="Volver">‹</a>
       <h1>${esc(lot.name)}</h1>
-      <button class="icon-btn" id="lot-menu" aria-label="Opciones del lote">⋯</button>
+      ${admin ? '<button class="icon-btn" id="lot-menu" aria-label="Opciones del lote">⋯</button>' : ''}
     </header>
     <main class="page">
       <div class="row">
-        <select id="lot-crop" class="grow" aria-label="Cultivo del lote">
+        <select id="lot-crop" class="grow" aria-label="Cultivo del lote" ${admin ? '' : 'disabled'}>
           <option value="">Cultivo sin definir</option>
           ${Object.entries(CROPS).map(([k, c]) => `<option value="${k}" ${cropKey(lot.crop) === k ? 'selected' : ''}>${c.name}</option>`).join('')}
         </select>
@@ -268,7 +278,8 @@ async function viewLot(lotId) {
     media.forEach((m) => {
       const color = { photo: '#1e88e5', video: '#8e24aa', audio: '#f4511e' }[m.type];
       const label = { photo: '📷 Foto', video: '🎥 Video', audio: '🎙️ Audio' }[m.type];
-      const body = m.type === 'photo' ? `<img src="${blobUrl(m.blob)}" class="popup-img">`
+      const body = !m.blob ? '<span class="muted">Abrilo desde la nota</span>'
+        : m.type === 'photo' ? `<img src="${blobUrl(m.blob)}" class="popup-img">`
         : m.type === 'audio' ? `<audio controls src="${blobUrl(m.blob)}" class="popup-audio"></audio>` : '';
       L.circleMarker([m.lat, m.lng], { radius: 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 })
         .bindPopup(`<strong>${label}</strong> · ${fmtDate(m.takenAt || when(n), false)}<br>${body}`, { minWidth: 160 }).addTo(map);
@@ -281,18 +292,21 @@ async function viewLot(lotId) {
 
   document.getElementById('lot-crop').addEventListener('change', async (e) => {
     lot.crop = e.target.value;
-    await db.put('lots', lot);
+    await db.save('lots', lot);
+    afterChange();
     toast(e.target.value ? `Cultivo: ${cropName(e.target.value)}` : 'Cultivo sin definir');
   });
 
-  document.getElementById('lot-menu').addEventListener('click', async () => {
+  const lotMenu = document.getElementById('lot-menu');
+  if (lotMenu) lotMenu.addEventListener('click', async () => {
     const choice = prompt('Escribí 1 para renombrar el lote, 2 para borrar el lote');
     if (choice === '1') {
       const name = prompt('Nombre del lote', lot.name);
-      if (name && name.trim()) { lot.name = name.trim(); await db.put('lots', lot); render(); }
+      if (name && name.trim()) { lot.name = name.trim(); await db.save('lots', lot); afterChange(); render(); }
     } else if (choice === '2') {
       if (confirm(`¿Borrar el lote “${lot.name}” y todas sus notas? No se puede deshacer.`)) {
         await db.deleteLot(lot.id);
+        afterChange();
         location.hash = '#/';
       }
     }
@@ -317,21 +331,56 @@ function noteCard(n, media) {
       <header>
         <span>${visitLabel(n)}</span>
         <span class="muted">${esc(n.author)}</span>
-        <button class="link danger" data-delete="${n.id}" aria-label="Borrar nota">Borrar</button>
+        ${canDelete(n) ? `<button class="link danger" data-delete="${n.id}" aria-label="Borrar nota">Borrar</button>` : ''}
+        ${n.dirty && sync.enabled ? '<span class="muted small" title="Falta sincronizar">⏳</span>' : ''}
       </header>
       ${chips ? `<div class="chips">${chips}</div>` : ''}
       ${n.text ? `<p class="text">${esc(n.text)}</p>` : ''}
       ${(n.actions || []).length ? `<div class="actions"><div class="small muted">Próximas acciones${n.due ? ` · para el ${fmtDay(n.due)}` : ''}</div>
         ${n.actions.map((a) => `<label class="action ${a.done ? 'done' : ''}"><input type="checkbox" data-action="${n.id}:${a.id}" ${a.done ? 'checked' : ''}> ${esc(a.text)}</label>`).join('')}</div>` : ''}
-      ${photos.length ? `<div class="thumbs">${photos.map((m) => `<figure><img src="${blobUrl(m.blob)}" alt="Foto" data-full loading="lazy">${m.lat != null ? '<span class="pin" title="Foto con ubicación">📍</span>' : ''}</figure>`).join('')}</div>` : ''}
-      ${audios.map((m) => `<audio controls preload="metadata" src="${blobUrl(m.blob)}"></audio>${mediaLoc(m)}`).join('')}
-      ${videos.map((m) => `<video controls playsinline preload="metadata" src="${blobUrl(m.blob)}"></video>${mediaLoc(m)}`).join('')}
+      ${photos.length ? `<div class="thumbs">${photos.map((m) => `<figure><img src="${mediaSrc(m)}"${remoteAttr(m)} alt="Foto" data-full loading="lazy">${m.lat != null ? '<span class="pin" title="Foto con ubicación">📍</span>' : ''}</figure>`).join('')}</div>` : ''}
+      ${audios.map((m) => `<audio controls preload="metadata" src="${mediaSrc(m)}"${remoteAttr(m)}></audio>${mediaLoc(m)}${transcriptBlock(m)}`).join('')}
+      ${videos.map((m) => `<video controls playsinline preload="metadata" src="${mediaSrc(m)}"${remoteAttr(m)}></video>${mediaLoc(m)}`).join('')}
       ${n.lat != null ? `<div class="muted small">📍 ${n.lat.toFixed(5)}, ${n.lng.toFixed(5)} (±${n.accuracy} m)</div>` : ''}
     </article>`;
 }
 
+// Archivo guardado en el dispositivo o, si todavía no se bajó, desde el servidor.
+function mediaSrc(m) {
+  return m.blob ? blobUrl(m.blob) : '';
+}
+
+function remoteAttr(m) {
+  return m.blob ? '' : ` data-remote="${m.id}"`;
+}
+
+async function hydrateMedia() {
+  for (const el of app.querySelectorAll('[data-remote]')) {
+    const m = await db.get('media', el.dataset.remote);
+    if (!m) continue;
+    const url = m.blob ? blobUrl(m.blob) : await sync.mediaUrl(m);
+    if (url) el.src = url;
+  }
+}
+
+function transcriptBlock(m) {
+  if (m.summary || m.transcript) {
+    return `<div class="transcript">
+      ${m.summary ? `<div class="summary">${esc(m.summary).replace(/\n/g, '<br>')}</div>` : ''}
+      ${m.transcript ? `<details><summary>Ver transcripción completa</summary><p>${esc(m.transcript)}</p></details>` : ''}
+    </div>`;
+  }
+  if (!sync.enabled) return '';
+  return m.remote ? `<button class="link" data-transcribe="${m.id}">📝 Transcribir audio</button>` : '<div class="muted small">Se transcribe al sincronizar.</div>';
+}
+
 function mediaLoc(m) {
   return m.lat != null ? `<div class="muted small">📍 ${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}</div>` : '';
+}
+
+let currentProfile = null;
+function canDelete(n) {
+  return !sync.enabled || !currentProfile || currentProfile.role === 'admin' || !n.authorId || n.authorId === currentProfile.id;
 }
 
 function pendingBox(notes) {
@@ -375,6 +424,14 @@ function fmtDay(iso) {
 }
 
 function bindNoteCards() {
+  hydrateMedia();
+  app.querySelectorAll('[data-transcribe]').forEach((btn) => btn.addEventListener('click', async () => {
+    btn.textContent = 'Transcribiendo…';
+    btn.disabled = true;
+    const res = await sync.requestTranscription(btn.dataset.transcribe);
+    if (res && res.transcript) render();
+    else { btn.textContent = 'No se pudo transcribir. Reintentar'; btn.disabled = false; }
+  }));
   app.querySelectorAll('[data-action]').forEach((box) => box.addEventListener('change', async () => {
     const [noteId, actionId] = box.dataset.action.split(':');
     const note = await db.get('notes', noteId);
@@ -382,12 +439,14 @@ function bindNoteCards() {
     if (!action) return;
     action.done = box.checked;
     action.doneAt = box.checked ? Date.now() : null;
-    await db.put('notes', note);
+    await db.save('notes', note);
+    afterChange();
     render();
   }));
   app.querySelectorAll('[data-delete]').forEach((btn) => btn.addEventListener('click', async () => {
     if (confirm('¿Borrar esta nota? No se puede deshacer.')) {
       await db.deleteNote(btn.dataset.delete);
+      afterChange();
       render();
     }
   }));
@@ -418,7 +477,7 @@ async function compressImage(file, maxSide = 1600) {
 
 async function viewNewNote(lotId) {
   const lot = await db.get('lots', lotId);
-  if (!lot) { location.hash = '#/'; return; }
+  if (!lot || lot.deleted) { location.hash = '#/'; return; }
   const me = await author();
   const pending = []; // { type, blob, mime, lat, lng, accuracy, createdAt }
   let notePos = null;
@@ -577,6 +636,7 @@ async function viewNewNote(lotId) {
       createdAt: Date.now(),
       visitAt: visitTimestamp(document.getElementById('visit').value),
       author: me,
+      authorId: ((await sync.profile()) || {}).id || null,
       text: document.getElementById('text').value.trim(),
       phenology: document.getElementById('phenology').value.trim(),
       crop: document.getElementById('crop').value,
@@ -604,16 +664,56 @@ async function viewNewNote(lotId) {
       delete m.fileLoc;
       delete m.liveLoc;
     }
-    await db.put('notes', note);
+    await db.save('notes', note);
     // Lo escrito a mano queda como opción para la próxima vez.
     await addCustomOption('pests', note.pest);
     await addCustomOption('diseases', note.disease);
     await addCustomOption('weeds', note.weed);
-    if (note.crop && cropKey(lot.crop) !== note.crop) { lot.crop = note.crop; await db.put('lots', lot); }
-    for (const m of pending) await db.put('media', { id: db.uid(), noteId: note.id, ...m });
+    if (note.crop && cropKey(lot.crop) !== note.crop && (await sync.isAdmin())) { lot.crop = note.crop; await db.save('lots', lot); }
+    for (const m of pending) await db.save('media', { id: db.uid(), noteId: note.id, lotId: lot.id, ...m });
+    afterChange();
     toast('Nota guardada');
     location.hash = `#/lote/${lot.id}`;
   });
+}
+
+// ---------- Ingreso ----------
+
+async function viewLogin() {
+  let mode = 'login';
+  function draw(error = '') {
+    app.innerHTML = `
+      <header class="bar"><h1>Recorridas</h1></header>
+      <main class="page form login">
+        <p>${mode === 'login' ? 'Iniciá sesión para sincronizar tus recorridas.' : 'Creá tu cuenta. El primero en registrarse queda como administrador.'}</p>
+        ${mode === 'signup' ? '<label>Tu nombre<input id="name" autocomplete="name"></label>' : ''}
+        <label>Mail<input id="email" type="email" autocomplete="email" inputmode="email"></label>
+        <label>Contraseña<input id="password" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}"></label>
+        ${error ? `<p class="late">${esc(error)}</p>` : ''}
+        <button id="go" class="btn primary">${mode === 'login' ? 'Entrar' : 'Crear cuenta'}</button>
+        <button id="switch" class="link">${mode === 'login' ? '¿No tenés cuenta? Crear una' : 'Ya tengo cuenta'}</button>
+      </main>`;
+    document.getElementById('switch').addEventListener('click', () => { mode = mode === 'login' ? 'signup' : 'login'; draw(); });
+    document.getElementById('go').addEventListener('click', async (e) => {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const nameEl = document.getElementById('name');
+      if (!email || !password || (nameEl && !nameEl.value.trim())) return draw('Completá todos los campos.');
+      e.target.disabled = true;
+      e.target.textContent = 'Un momento…';
+      try {
+        if (mode === 'login') await sync.signIn(email, password);
+        else await sync.signUp(email, password, nameEl.value.trim());
+        currentProfile = await sync.profile();
+        location.hash = '#/';
+        render();
+        runSync();
+      } catch (err) {
+        draw(err.message || String(err));
+      }
+    });
+  }
+  draw();
 }
 
 // ---------- Ajustes ----------
@@ -621,12 +721,14 @@ async function viewNewNote(lotId) {
 async function viewSettings() {
   const name = await db.getSetting('author', '');
   const { campaign } = await currentCampaign();
+  const profile = await sync.profile();
+  const admin = await sync.isAdmin();
   let usage = '';
   if (navigator.storage && navigator.storage.estimate) {
     const est = await navigator.storage.estimate();
     usage = `${(est.usage / 1048576).toFixed(1)} MB usados`;
   }
-  const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : false;
+  const lastSync = await db.getSetting('lastSync');
 
   app.innerHTML = `
     <header class="bar">
@@ -638,22 +740,127 @@ async function viewSettings() {
         <input id="author" value="${esc(name)}">
       </label>
       <button id="save-author" class="btn">Guardar nombre</button>
-      <p class="muted">Almacenamiento: ${usage || 'sin datos'}${persisted ? ' · protegido' : ''}.</p>
-      <p class="muted">Por ahora las notas se guardan solo en este dispositivo. Más adelante se van a sincronizar entre usuarios.</p>
-      ${campaign ? `<button id="del-campaign" class="btn danger">Borrar campaña “${esc(campaign.name)}”</button>` : ''}
+      ${sync.enabled && profile ? `
+        <section class="box">
+          <strong>Cuenta</strong>
+          <div class="muted">${esc(profile.email)} · ${profile.role === 'admin' ? 'Administrador' : 'Usuario'}</div>
+          <div id="sync-state" class="muted"></div>
+          <div class="muted small">Última sincronización: ${lastSync ? fmtDate(lastSync) : 'nunca'}</div>
+          <div class="row">
+            <button id="sync-now" class="btn grow">🔄 Sincronizar ahora</button>
+            <button id="logout" class="btn grow">Cerrar sesión</button>
+          </div>
+        </section>
+        ${admin ? `<section class="box" id="users"><strong>Usuarios y lotes que ve cada uno</strong><div class="muted">Cargando…</div></section>` : ''}
+      ` : '<p class="muted">Las notas se guardan solo en este dispositivo.</p>'}
+      <p class="muted">Almacenamiento: ${usage || 'sin datos'}.</p>
+      ${campaign && admin ? `<button id="del-campaign" class="btn danger">Borrar campaña “${esc(campaign.name)}”</button>` : ''}
     </main>`;
 
   document.getElementById('save-author').addEventListener('click', async () => {
-    await db.setSetting('author', document.getElementById('author').value.trim() || 'Sin nombre');
-    toast('Guardado');
+    const value = document.getElementById('author').value.trim() || 'Sin nombre';
+    try { await sync.updateName(value); toast('Guardado'); } catch { toast('Guardado en el dispositivo; se actualiza al tener señal'); }
   });
   const del = document.getElementById('del-campaign');
   if (del) del.addEventListener('click', async () => {
     if (!confirm(`¿Borrar la campaña “${campaign.name}” con todos sus lotes y notas? No se puede deshacer.`)) return;
-    for (const lot of await lotsOf(campaign.id)) await db.deleteLot(lot.id);
-    await db.remove('campaigns', campaign.id);
+    await db.deleteCampaign(campaign.id);
+    afterChange();
     location.hash = '#/';
   });
+
+  if (!(sync.enabled && profile)) return;
+  const stateEl = document.getElementById('sync-state');
+  const off = sync.onStatus((st) => { if (document.body.contains(stateEl)) stateEl.textContent = statusText(st); else off(); });
+  document.getElementById('sync-now').addEventListener('click', () => runSync(true));
+  document.getElementById('logout').addEventListener('click', async () => {
+    const pending = await db.pendingCount();
+    const msg = pending
+      ? `Hay ${pending} cambios sin sincronizar que se van a perder. ¿Cerrar sesión igual?`
+      : '¿Cerrar sesión? Se borran los datos de este dispositivo (quedan guardados en la nube).';
+    if (!confirm(msg)) return;
+    await sync.signOut();
+    currentProfile = null;
+    location.hash = '#/';
+    render();
+  });
+  if (admin) renderUsers(campaign);
+}
+
+async function renderUsers(campaign) {
+  const box = document.getElementById('users');
+  const lots = await lotsOf(campaign && campaign.id);
+  let data;
+  try {
+    data = await sync.listUsers();
+  } catch {
+    box.innerHTML = '<strong>Usuarios</strong><div class="muted">Se necesita señal para ver y cambiar los permisos.</div>';
+    return;
+  }
+  const { users, access } = data;
+  const has = (u, l) => access.some((a) => a.user_id === u && a.lot_id === l);
+  box.innerHTML = `
+    <strong>Usuarios y lotes que ve cada uno</strong>
+    <div class="muted small">Campaña ${esc(campaign ? campaign.name : '—')}. Para sumar a alguien, que abra la app y se cree una cuenta; después aparece acá.</div>
+    ${users.map((u) => `
+      <details class="user">
+        <summary><strong>${esc(u.name || u.email)}</strong> <span class="muted small">${esc(u.email)} · ${u.role === 'admin' ? 'Administrador (ve todo)' : `${lots.filter((l) => has(u.id, l.id)).length} de ${lots.length} lotes`}</span></summary>
+        ${u.id === currentProfile.id ? '' : `<label class="action"><input type="checkbox" data-role="${u.id}" ${u.role === 'admin' ? 'checked' : ''}> Administrador</label>`}
+        ${u.role === 'admin' ? '' : `
+          <label class="action"><input type="checkbox" data-all="${u.id}" ${lots.length && lots.every((l) => has(u.id, l.id)) ? 'checked' : ''}> <b>Todos los lotes</b></label>
+          ${lots.map((l) => `<label class="action"><input type="checkbox" data-user="${u.id}" data-lot="${l.id}" ${has(u.id, l.id) ? 'checked' : ''}> ${esc(l.name)}</label>`).join('')}`}
+      </details>`).join('')}`;
+
+  const refresh = async (fn) => {
+    try { await fn(); toast('Permisos actualizados'); } catch (err) { toast(`No se pudo: ${err.message}`); }
+    const open = [...box.querySelectorAll('details[open] summary')].map((s) => s.textContent);
+    await renderUsers(campaign);
+    box.querySelectorAll('details summary').forEach((s) => { if (open.includes(s.textContent)) s.parentElement.open = true; });
+  };
+  box.querySelectorAll('[data-lot]').forEach((cb) => cb.addEventListener('change', () =>
+    refresh(() => sync.setAccess(cb.dataset.user, [cb.dataset.lot], cb.checked))));
+  box.querySelectorAll('[data-all]').forEach((cb) => cb.addEventListener('change', () =>
+    refresh(() => sync.setAccess(cb.dataset.all, lots.map((l) => l.id), cb.checked))));
+  box.querySelectorAll('[data-role]').forEach((cb) => cb.addEventListener('change', () => {
+    if (!confirm(cb.checked ? '¿Hacerlo administrador? Va a ver y poder cambiar todo.' : '¿Quitarle el rol de administrador?')) { cb.checked = !cb.checked; return; }
+    refresh(() => sync.setRole(cb.dataset.role, cb.checked ? 'admin' : 'user'));
+  }));
+}
+
+// ---------- Sincronización ----------
+
+function statusText(st) {
+  if (st.state === 'syncing') return '🔄 Sincronizando…';
+  if (st.state === 'offline') return `📴 Sin señal${st.pending ? ` · ${st.pending} cambios para subir` : ''}`;
+  if (st.state === 'error') return `⚠️ ${st.error}${st.pending ? ` · ${st.pending} cambios para subir` : ''}`;
+  if (st.state === 'ok') return st.pending ? `☁️ ${st.pending} cambios para subir` : '☁️ Todo sincronizado';
+  return '';
+}
+
+function bindSyncBadge() {
+  const el = document.getElementById('sync-badge');
+  if (!el) return;
+  const off = sync.onStatus((st) => {
+    if (!document.body.contains(el)) { off(); return; }
+    el.textContent = { syncing: '🔄', offline: '📴', error: '⚠️', ok: st.pending ? `☁️${st.pending}` : '☁️✓', idle: '☁️' }[st.state];
+    el.title = statusText(st);
+  });
+}
+
+let syncTimer = null;
+// Después de cada cambio se sincroniza a los pocos segundos.
+function afterChange() {
+  if (!sync.enabled) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => runSync(), 2000);
+}
+
+async function runSync(manual = false) {
+  if (!sync.enabled || !currentProfile) return;
+  const { changed } = await sync.syncNow();
+  if (manual) toast(statusText(await new Promise((r) => sync.onStatus((st) => r(st))())) || 'Listo');
+  // Si llegaron datos nuevos, se redibuja salvo que esté cargando una nota.
+  if (changed && !location.hash.startsWith('#/nota/')) render();
 }
 
 // ---------- Router ----------
@@ -662,7 +869,8 @@ async function render() {
   cleanup();
   const parts = location.hash.replace(/^#\/?/, '').split('/');
   try {
-    if (parts[0] === 'lote' && parts[1]) await viewLot(parts[1]);
+    if (sync.enabled && !currentProfile) await viewLogin();
+    else if (parts[0] === 'lote' && parts[1]) await viewLot(parts[1]);
     else if (parts[0] === 'nota' && parts[1] === 'nueva' && parts[2]) await viewNewNote(parts[2]);
     else if (parts[0] === 'ajustes') await viewSettings();
     else await viewHome();
@@ -675,7 +883,15 @@ async function render() {
 
 window.addEventListener('hashchange', render);
 db.requestPersistence();
-render();
+(async () => {
+  currentProfile = await sync.profile();
+  await render();
+  runSync();
+})();
+
+window.addEventListener('online', () => runSync());
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') runSync(); });
+setInterval(() => { if (document.visibilityState === 'visible') runSync(); }, 3 * 60 * 1000);
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});

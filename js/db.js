@@ -72,16 +72,58 @@ export async function setSetting(key, value) {
   return put('settings', { key, value });
 }
 
+// Guarda un registro propio y lo marca para subirlo en la próxima sincronización.
+export async function save(name, value) {
+  value.dirty = 1;
+  value.rev = (value.rev || 0) + 1;
+  return put(name, value);
+}
+
+// Los borrados son marcas: así la sincronización puede avisarle al resto.
 export async function deleteNote(noteId) {
-  const media = await byIndex('media', 'noteId', noteId);
-  for (const m of media) await remove('media', m.id);
-  await remove('notes', noteId);
+  const note = await get('notes', noteId);
+  if (!note) return;
+  for (const m of await byIndex('media', 'noteId', noteId)) {
+    m.deleted = true;
+    m.blob = null;
+    await save('media', m);
+  }
+  note.deleted = true;
+  await save('notes', note);
 }
 
 export async function deleteLot(lotId) {
-  const notes = await byIndex('notes', 'lotId', lotId);
-  for (const n of notes) await deleteNote(n.id);
-  await remove('lots', lotId);
+  const lot = await get('lots', lotId);
+  if (!lot) return;
+  for (const n of await byIndex('notes', 'lotId', lotId)) await deleteNote(n.id);
+  lot.deleted = true;
+  await save('lots', lot);
+}
+
+export async function deleteCampaign(campaignId) {
+  const campaign = await get('campaigns', campaignId);
+  if (!campaign) return;
+  for (const lot of await byIndex('lots', 'campaignId', campaignId)) await deleteLot(lot.id);
+  campaign.deleted = true;
+  await save('campaigns', campaign);
+}
+
+export async function pendingCount() {
+  let n = 0;
+  for (const name of ['campaigns', 'lots', 'notes', 'media']) n += (await all(name)).filter((r) => r.dirty).length;
+  return n;
+}
+
+// Borra todos los datos del dispositivo (al cerrar sesión).
+export async function clearAll() {
+  const db = await open();
+  const names = ['campaigns', 'lots', 'notes', 'media', 'settings'];
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(names, 'readwrite');
+    names.forEach((n) => tx.objectStore(n).clear());
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 // Pide al navegador que no borre los datos si falta espacio.
