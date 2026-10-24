@@ -27,15 +27,19 @@ Deno.serve(async (req) => {
     const { media_id } = await req.json();
     const url = Deno.env.get('SUPABASE_URL')!;
 
-    // Con el usuario que llama: así solo puede transcribir audios de lotes que ve.
-    const asUser = createClient(url, Deno.env.get('SUPABASE_ANON_KEY')!, {
-      global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
-    });
-    const { data: media } = await asUser.from('media').select('*').eq('id', media_id).single();
+    const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+
+    // Quién llama, y si tiene acceso al lote del audio (admin o lote asignado).
+    const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+    const { data: auth } = await admin.auth.getUser(jwt);
+    if (!auth?.user) return json({ error: 'Sesión inválida' }, 401);
+    const { data: media } = await admin.from('media').select('*').eq('id', media_id).single();
     if (!media || media.type !== 'audio') return json({ error: 'Audio no encontrado' }, 404);
+    const { data: profile } = await admin.from('profiles').select('role').eq('id', auth.user.id).single();
+    const { data: access } = await admin.from('lot_access').select('lot_id').eq('user_id', auth.user.id).eq('lot_id', media.lot_id);
+    if (profile?.role !== 'admin' && !access?.length) return json({ error: 'Sin acceso a este lote' }, 403);
     if (media.transcript) return json({ transcript: media.transcript, summary: media.summary });
 
-    const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const { data: file, error: dlError } = await admin.storage.from('media').download(media.path);
     if (dlError || !file) return json({ error: 'No se pudo leer el audio' }, 500);
 
