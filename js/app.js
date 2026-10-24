@@ -35,7 +35,7 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
-const APP_VERSION = '16';
+const APP_VERSION = '17';
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -108,12 +108,12 @@ async function viewHome() {
 
   app.innerHTML = `
     <header class="bar">
-      <img class="bar-logo" src="icons/mark.png" alt="Las Nazarenas">
       <h1>Recorridas</h1>
       ${sync.enabled ? '<a id="sync-badge" class="sync-badge" href="#/ajustes" aria-label="Estado de sincronización"></a>' : ''}
       <a class="icon-btn" href="#/ajustes" aria-label="Ajustes">⚙︎</a>
     </header>
     <main class="page">
+      <img class="home-logo" src="icons/logo.png" alt="Las Nazarenas">
       <div class="row">
         <select id="campaign" class="grow" aria-label="Campaña">
           ${campaigns.map((c) => `<option value="${c.id}" ${campaign && c.id === campaign.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
