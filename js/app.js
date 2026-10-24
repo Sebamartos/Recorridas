@@ -35,6 +35,8 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
+const APP_VERSION = '12';
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -428,12 +430,14 @@ function bindNoteCards() {
   app.querySelectorAll('[data-transcribe]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.textContent = 'Transcribiendo…';
     btn.disabled = true;
-    const res = await sync.requestTranscription(btn.dataset.transcribe);
+    let res;
+    try { res = await sync.requestTranscription(btn.dataset.transcribe); } catch (err) { res = { error: err.message || String(err) }; }
     if (res && res.transcript) render();
     else {
       btn.textContent = 'No se pudo transcribir. Reintentar';
       btn.disabled = false;
-      if (res && res.error) btn.insertAdjacentHTML('afterend', `<div class="muted small">Error: ${esc(res.error)}</div>`);
+      btn.nextElementSibling?.classList.contains('transcribe-error') && btn.nextElementSibling.remove();
+      btn.insertAdjacentHTML('afterend', `<div class="muted small transcribe-error">Error: ${esc((res && res.error) || 'sin detalle')}</div>`);
     }
   }));
   app.querySelectorAll('[data-action]').forEach((box) => box.addEventListener('change', async () => {
@@ -759,6 +763,7 @@ async function viewSettings() {
       ` : '<p class="muted">Las notas se guardan solo en este dispositivo.</p>'}
       <p class="muted">Almacenamiento: ${usage || 'sin datos'}.</p>
       ${campaign && admin ? `<button id="del-campaign" class="btn danger">Borrar campaña “${esc(campaign.name)}”</button>` : ''}
+      <p class="muted small">Versión ${APP_VERSION}</p>
     </main>`;
 
   document.getElementById('save-author').addEventListener('click', async () => {
@@ -898,5 +903,16 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 setInterval(() => { if (document.visibilityState === 'visible') runSync(); }, 3 * 60 * 1000);
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Cuando hay una versión nueva publicada, la toma sola (sin perder una nota a medio escribir).
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    if (location.hash.startsWith('#/nota/')) return;
+    reloading = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
 }
