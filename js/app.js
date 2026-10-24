@@ -17,6 +17,7 @@ const TILE_ATTR = 'Imágenes © Esri';
 
 // URLs de blobs abiertas en la vista actual; se liberan al cambiar de pantalla.
 let objectUrls = [];
+let lotQuery = ''; // búsqueda de lotes, se mantiene al volver al inicio
 let activeMap = null;
 
 function blobUrl(blob) {
@@ -28,7 +29,7 @@ function blobUrl(blob) {
 function cleanup() {
   objectUrls.forEach((u) => URL.revokeObjectURL(u));
   objectUrls = [];
-  if (activeMap) { activeMap.remove(); activeMap = null; }
+  if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
 function esc(s) {
@@ -111,18 +112,20 @@ async function viewHome() {
         </select>
       </div>
       ${campaign ? `
+        ${lots.length > 1 ? `<input id="search" type="search" placeholder="🔍 Buscar lote o cultivo…" value="${esc(lotQuery)}" autocomplete="off" enterkeyhint="search">` : ''}
         <div id="map" class="map"></div>
         <div class="row">
           <button id="quick" class="btn primary grow">＋ Nota rápida (por GPS)</button>
         </div>
         <ul class="list">
           ${lots.map((l) => `
-            <li><a href="#/lote/${l.id}">
+            <li data-lot="${l.id}" data-search="${esc(norm(`${l.name} ${cropName(cropKey(l.crop)) || l.crop || ''}`))}"><a href="#/lote/${l.id}">
               <div><strong>${esc(l.name)}</strong>${l.crop ? ` · ${esc(cropName(cropKey(l.crop)) || l.crop)}` : ''}</div>
               <div class="muted">${areaHa(l.geometry).toFixed(1)} ha · ${stats[l.id].count} nota${stats[l.id].count === 1 ? "" : "s"}${stats[l.id].last ? ` · última ${fmtDate(stats[l.id].last, false)}` : ''}</div>
               ${stats[l.id].pending ? `<div class="small late">${stats[l.id].pending} pendiente${stats[l.id].pending > 1 ? 's' : ''}</div>` : ''}
             </a></li>`).join('') || '<li class="empty">Todavía no hay lotes en esta campaña.</li>'}
         </ul>
+        <div id="no-match" class="empty" hidden>Ningún lote coincide con la búsqueda.</div>
         <label class="btn">Importar lotes (KML o KMZ)<input id="kml" type="file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>
       ` : `
         <div class="empty">Creá tu primera campaña para empezar, por ejemplo “2026/27”.</div>
@@ -180,16 +183,48 @@ async function viewHome() {
   });
 
   const map = makeMap(document.getElementById('map'));
+  const layers = {};
   if (lots.length) {
-    const group = L.featureGroup(lots.map((l) =>
-      L.geoJSON(l.geometry, { style: { color: '#ffd54a', weight: 2, fillOpacity: 0.15 } })
+    const group = L.featureGroup(lots.map((l) => {
+      layers[l.id] = L.geoJSON(l.geometry, { style: { color: '#ffd54a', weight: 2, fillOpacity: 0.15 } })
         .bindTooltip(l.name, { permanent: lots.length <= 30, direction: 'center', className: 'lot-label' })
-        .on('click', () => { location.hash = `#/lote/${l.id}`; })
-    )).addTo(map);
+        .on('click', () => { location.hash = `#/lote/${l.id}`; });
+      return layers[l.id];
+    })).addTo(map);
     map.fitBounds(group.getBounds(), { padding: [10, 10] });
   } else {
     map.setView([-34.6, -60.5], 6);
   }
+
+  const search = document.getElementById('search');
+  if (!search) return;
+  function applySearch() {
+    lotQuery = search.value;
+    const words = norm(lotQuery).split(/\s+/).filter(Boolean);
+    const matched = [];
+    app.querySelectorAll('li[data-lot]').forEach((li) => {
+      const ok = words.every((w) => li.dataset.search.includes(w));
+      li.hidden = !ok;
+      if (ok) matched.push(li.dataset.lot);
+      layers[li.dataset.lot].setStyle(ok ? { opacity: 1, fillOpacity: 0.15 } : { opacity: 0.25, fillOpacity: 0.03 });
+    });
+    document.getElementById('no-match').hidden = matched.length > 0;
+    if (words.length && matched.length) {
+      map.fitBounds(L.featureGroup(matched.map((id) => layers[id])).getBounds(), { padding: [20, 20], maxZoom: 16, animate: false });
+    }
+  }
+  search.addEventListener('input', applySearch);
+  search.addEventListener('keydown', (e) => {
+    // Enter con un solo resultado abre el lote directamente.
+    if (e.key !== 'Enter') return;
+    const visible = [...app.querySelectorAll('li[data-lot]')].filter((li) => !li.hidden);
+    if (visible.length === 1) location.hash = `#/lote/${visible[0].dataset.lot}`;
+  });
+  if (lotQuery) applySearch();
+}
+
+function norm(text) {
+  return String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
 // ---------- Lote ----------
