@@ -145,3 +145,21 @@ label > input, label > textarea, label > select { color: var(--text); font-size:
 .action input { width: 20px; height: 20px; flex: none; }
 .action.done { text-decoration: line-through; opacity: .6; }
 .late { color: var(--danger); font-weight: 600; }
+
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+.field > input { color: var(--text); font-size: 16px; }
+.combo { position: relative; }
+.combo-list {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 1500;
+  max-height: 280px; overflow-y: auto; margin-top: 4px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+}
+.combo-list button {
+  display: block; width: 100%; padding: 11px 12px; border: 0; border-bottom: 1px solid var(--line);
+  background: none; color: var(--text); font: inherit; font-size: 15px; text-align: left; cursor: pointer;
+}
+.combo-list button:last-child { border-bottom: 0; }
+.combo-list button:hover { background: rgba(46,125,50,.08); }
+.combo-list .add { color: var(--green-2); font-weight: 600; }
+.combo-list .clear { color: var(--muted); font-size: 13px; }

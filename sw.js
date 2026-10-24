@@ -1,6 +1,6 @@
 // Guarda la app en el dispositivo para que abra sin señal.
 // Subí VERSION en cada cambio para que los teléfonos tomen la versión nueva.
-const VERSION = 'v6';
+const VERSION = 'v7';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const MAX_TILES = 3000;
@@ -14,6 +14,7 @@ const APP_FILES = [
   'js/db.js',
   'js/geo.js',
   'js/crops.js',
+  'js/combo.js',
   'vendor/leaflet/leaflet.css',
   'vendor/leaflet/leaflet.js',
   'vendor/togeojson/togeojson.umd.js',

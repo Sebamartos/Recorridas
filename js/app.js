@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import { parseLotsFile, containsPoint, areaHa, getPosition } from './geo.js';
 import { CROPS, WEEDS, cropKey, cropName } from './crops.js';
+import { combo, addCustomOption } from './combo.js';
 
 const L = window.L;
 const app = document.getElementById('app');
@@ -93,7 +94,7 @@ async function viewHome() {
     const notes = await db.byIndex('notes', 'lotId', lot.id);
     stats[lot.id] = {
       count: notes.length,
-      last: notes.reduce((m, n) => Math.max(m, n.createdAt), 0),
+      last: notes.reduce((m, n) => Math.max(m, when(n)), 0),
       pending: notes.reduce((c, n) => c + (n.actions || []).filter((a) => !a.done).length, 0),
     };
   }
@@ -232,7 +233,7 @@ function norm(text) {
 async function viewLot(lotId) {
   const lot = await db.get('lots', lotId);
   if (!lot) { location.hash = '#/'; return; }
-  const notes = (await db.byIndex('notes', 'lotId', lotId)).sort((a, b) => b.createdAt - a.createdAt);
+  const notes = (await db.byIndex('notes', 'lotId', lotId)).sort((a, b) => when(b) - when(a) || b.createdAt - a.createdAt);
   const mediaByNote = {};
   for (const n of notes) mediaByNote[n.id] = await db.byIndex('media', 'noteId', n.id);
 
@@ -264,7 +265,7 @@ async function viewLot(lotId) {
   for (const n of notes) {
     const pts = [n, ...mediaByNote[n.id]].filter((p) => p.lat != null);
     pts.forEach((p) => L.circleMarker([p.lat, p.lng], { radius: 6, color: '#fff', weight: 2, fillColor: '#2e7d32', fillOpacity: 1 })
-      .bindPopup(`${fmtDate(n.createdAt)}<br>${esc((n.text || '').slice(0, 80))}`).addTo(map));
+      .bindPopup(`${fmtDate(when(n), false)}<br>${esc((n.text || '').slice(0, 80))}`).addTo(map));
   }
 
   document.getElementById('lot-crop').addEventListener('change', async (e) => {
@@ -303,7 +304,7 @@ function noteCard(n, media) {
   return `
     <article class="card" data-note="${n.id}">
       <header>
-        <span>${fmtDate(n.createdAt)}</span>
+        <span>${visitLabel(n)}</span>
         <span class="muted">${esc(n.author)}</span>
         <button class="link danger" data-delete="${n.id}" aria-label="Borrar nota">Borrar</button>
       </header>
@@ -324,8 +325,28 @@ function pendingBox(notes) {
   return `<section class="pending-box">
     <strong>Pendientes (${items.length})</strong>
     ${items.map(({ n, a }) => `<label class="action"><input type="checkbox" data-action="${n.id}:${a.id}"> ${esc(a.text)}
-      <span class="muted small">${n.due ? `para el ${fmtDay(n.due)}` : `desde ${fmtDate(n.createdAt, false)}`}${n.due && n.due < today() ? ' · <b class="late">vencido</b>' : ''}</span></label>`).join('')}
+      <span class="muted small">${n.due ? `para el ${fmtDay(n.due)}` : `desde ${fmtDate(when(n), false)}`}${n.due && n.due < today() ? ' · <b class="late">vencido</b>' : ''}</span></label>`).join('')}
   </section>`;
+}
+
+// Fecha de la visita (las notas viejas no la tienen: se usa la de carga).
+function when(n) {
+  return n.visitAt || n.createdAt;
+}
+
+function sameDay(a, b) {
+  return new Date(a).toDateString() === new Date(b).toDateString();
+}
+
+function visitLabel(n) {
+  if (sameDay(when(n), n.createdAt)) return fmtDate(n.createdAt);
+  return `${fmtDate(when(n), false)} <span class="muted small">(cargada el ${fmtDate(n.createdAt, false)})</span>`;
+}
+
+function visitTimestamp(iso) {
+  if (!iso || iso === today()) return Date.now();
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d, 12).getTime();
 }
 
 function today() {
@@ -395,6 +416,9 @@ async function viewNewNote(lotId) {
     </header>
     <main class="page form">
       <div id="gps" class="muted small">📍 Buscando ubicación…</div>
+      <label>Fecha de la visita
+        <input id="visit" type="date" value="${today()}" max="${today()}">
+      </label>
       <label>Lo que viste
         <textarea id="text" rows="5" placeholder="Estado del cultivo, plagas, malezas, humedad…"></textarea>
       </label>
@@ -408,18 +432,15 @@ async function viewNewNote(lotId) {
         <label><span>Estado fenológico <span id="scale" class="small"></span></span>
           <select id="phenology"></select>
         </label>
-        <label>Plaga
-          <input id="pest" list="pest-list" placeholder="Elegí o escribí">
-          <datalist id="pest-list"></datalist>
-        </label>
-        <label>Enfermedad
-          <input id="disease" list="disease-list" placeholder="Elegí o escribí">
-          <datalist id="disease-list"></datalist>
-        </label>
-        <label>Maleza
-          <input id="weed" list="weed-list" placeholder="Elegí o escribí">
-          <datalist id="weed-list">${WEEDS.map((w) => `<option value="${esc(w)}">`).join('')}</datalist>
-        </label>
+        <div class="field"><span>Plaga</span>
+          <input id="pest" placeholder="Tocá o escribí la primera letra">
+        </div>
+        <div class="field"><span>Enfermedad</span>
+          <input id="disease" placeholder="Tocá o escribí la primera letra">
+        </div>
+        <div class="field"><span>Maleza</span>
+          <input id="weed" placeholder="Tocá o escribí la primera letra">
+        </div>
         <label>Nivel de daño
           <select id="damage">${DAMAGE.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>
         </label>
@@ -439,15 +460,17 @@ async function viewNewNote(lotId) {
       <button id="save" class="btn primary">Guardar nota</button>
     </main>`;
 
-  const options = (list) => list.map((v) => `<option value="${esc(v)}">`).join('');
+  const cropOf = () => CROPS[document.getElementById('crop').value];
+  const allOf = (field) => [...new Set(Object.values(CROPS).flatMap((c) => c[field]))];
+  combo(document.getElementById('pest'), 'pests', () => (cropOf() ? cropOf().pests : allOf('pests')));
+  combo(document.getElementById('disease'), 'diseases', () => (cropOf() ? cropOf().diseases : allOf('diseases')));
+  combo(document.getElementById('weed'), 'weeds', () => WEEDS);
+
   function fillCropLists() {
     const crop = CROPS[document.getElementById('crop').value];
     document.getElementById('scale').textContent = crop ? `(${crop.scale})` : '';
     document.getElementById('phenology').innerHTML = '<option value="">—</option>' +
       (crop ? crop.phenology.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join('') : '');
-    const all = (field) => [...new Set(Object.values(CROPS).flatMap((c) => c[field]))];
-    document.getElementById('pest-list').innerHTML = options(crop ? crop.pests : all('pests'));
-    document.getElementById('disease-list').innerHTML = options(crop ? crop.diseases : all('diseases'));
   }
   fillCropLists();
   document.getElementById('crop').addEventListener('change', fillCropLists);
@@ -523,6 +546,7 @@ async function viewNewNote(lotId) {
       id: db.uid(),
       lotId: lot.id,
       createdAt: Date.now(),
+      visitAt: visitTimestamp(document.getElementById('visit').value),
       author: me,
       text: document.getElementById('text').value.trim(),
       phenology: document.getElementById('phenology').value.trim(),
@@ -539,7 +563,17 @@ async function viewNewNote(lotId) {
       accuracy: notePos ? notePos.accuracy : null,
     };
     if (!note.text && !note.phenology && !note.pest && !note.disease && !note.weed && !note.actions.length && !note.damage && !pending.length) return alert('La nota está vacía.');
+    // Si la nota se carga otro día, la ubicación actual no es la de la visita.
+    const sameDayVisit = document.getElementById('visit').value === today() || !document.getElementById('visit').value;
+    if (!sameDayVisit) {
+      note.lat = note.lng = note.accuracy = null;
+      pending.forEach((m) => { m.lat = m.lng = m.accuracy = null; });
+    }
     await db.put('notes', note);
+    // Lo escrito a mano queda como opción para la próxima vez.
+    await addCustomOption('pests', note.pest);
+    await addCustomOption('diseases', note.disease);
+    await addCustomOption('weeds', note.weed);
     if (note.crop && cropKey(lot.crop) !== note.crop) { lot.crop = note.crop; await db.put('lots', lot); }
     for (const m of pending) await db.put('media', { id: db.uid(), noteId: note.id, ...m });
     toast('Nota guardada');
