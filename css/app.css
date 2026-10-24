@@ -163,3 +163,9 @@ label > input, label > textarea, label > select { color: var(--text); font-size:
 .combo-list button:hover { background: rgba(46,125,50,.08); }
 .combo-list .add { color: var(--green-2); font-weight: 600; }
 .combo-list .clear { color: var(--muted); font-size: 13px; }
+
+.thumbs figure { position: relative; margin: 0; }
+.thumbs .pin { position: absolute; right: 4px; bottom: 4px; font-size: 13px; background: rgba(0,0,0,.55); border-radius: 6px; padding: 1px 3px; }
+.popup-img { display: block; width: 180px; max-width: 100%; margin-top: 6px; border-radius: 6px; }
+.popup-audio { width: 220px; margin-top: 6px; }
+.pending-item .muted.small { flex: 1; }

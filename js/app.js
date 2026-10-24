@@ -2,6 +2,7 @@ import * as db from './db.js';
 import { parseLotsFile, containsPoint, areaHa, getPosition } from './geo.js';
 import { CROPS, WEEDS, cropKey, cropName } from './crops.js';
 import { combo, addCustomOption } from './combo.js';
+import { photoMeta, videoMeta } from './mediageo.js';
 
 const L = window.L;
 const app = document.getElementById('app');
@@ -263,9 +264,19 @@ async function viewLot(lotId) {
   const shape = L.geoJSON(lot.geometry, { style: { color: '#ffd54a', weight: 2, fillOpacity: 0.1 } }).addTo(map);
   map.fitBounds(shape.getBounds(), { padding: [10, 10] });
   for (const n of notes) {
-    const pts = [n, ...mediaByNote[n.id]].filter((p) => p.lat != null);
-    pts.forEach((p) => L.circleMarker([p.lat, p.lng], { radius: 6, color: '#fff', weight: 2, fillColor: '#2e7d32', fillOpacity: 1 })
-      .bindPopup(`${fmtDate(when(n), false)}<br>${esc((n.text || '').slice(0, 80))}`).addTo(map));
+    const media = mediaByNote[n.id].filter((m) => m.lat != null);
+    media.forEach((m) => {
+      const color = { photo: '#1e88e5', video: '#8e24aa', audio: '#f4511e' }[m.type];
+      const label = { photo: '📷 Foto', video: '🎥 Video', audio: '🎙️ Audio' }[m.type];
+      const body = m.type === 'photo' ? `<img src="${blobUrl(m.blob)}" class="popup-img">`
+        : m.type === 'audio' ? `<audio controls src="${blobUrl(m.blob)}" class="popup-audio"></audio>` : '';
+      L.circleMarker([m.lat, m.lng], { radius: 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 })
+        .bindPopup(`<strong>${label}</strong> · ${fmtDate(m.takenAt || when(n), false)}<br>${body}`, { minWidth: 160 }).addTo(map);
+    });
+    if (!media.length && n.lat != null) {
+      L.circleMarker([n.lat, n.lng], { radius: 6, color: '#fff', weight: 2, fillColor: '#2e7d32', fillOpacity: 1 })
+        .bindPopup(`${fmtDate(when(n), false)}<br>${esc((n.text || '').slice(0, 80))}`).addTo(map);
+    }
   }
 
   document.getElementById('lot-crop').addEventListener('change', async (e) => {
@@ -312,11 +323,15 @@ function noteCard(n, media) {
       ${n.text ? `<p class="text">${esc(n.text)}</p>` : ''}
       ${(n.actions || []).length ? `<div class="actions"><div class="small muted">Próximas acciones${n.due ? ` · para el ${fmtDay(n.due)}` : ''}</div>
         ${n.actions.map((a) => `<label class="action ${a.done ? 'done' : ''}"><input type="checkbox" data-action="${n.id}:${a.id}" ${a.done ? 'checked' : ''}> ${esc(a.text)}</label>`).join('')}</div>` : ''}
-      ${photos.length ? `<div class="thumbs">${photos.map((m) => `<img src="${blobUrl(m.blob)}" alt="Foto" data-full loading="lazy">`).join('')}</div>` : ''}
-      ${audios.map((m) => `<audio controls preload="metadata" src="${blobUrl(m.blob)}"></audio>`).join('')}
-      ${videos.map((m) => `<video controls playsinline preload="metadata" src="${blobUrl(m.blob)}"></video>`).join('')}
+      ${photos.length ? `<div class="thumbs">${photos.map((m) => `<figure><img src="${blobUrl(m.blob)}" alt="Foto" data-full loading="lazy">${m.lat != null ? '<span class="pin" title="Foto con ubicación">📍</span>' : ''}</figure>`).join('')}</div>` : ''}
+      ${audios.map((m) => `<audio controls preload="metadata" src="${blobUrl(m.blob)}"></audio>${mediaLoc(m)}`).join('')}
+      ${videos.map((m) => `<video controls playsinline preload="metadata" src="${blobUrl(m.blob)}"></video>${mediaLoc(m)}`).join('')}
       ${n.lat != null ? `<div class="muted small">📍 ${n.lat.toFixed(5)}, ${n.lng.toFixed(5)} (±${n.accuracy} m)</div>` : ''}
     </article>`;
+}
+
+function mediaLoc(m) {
+  return m.lat != null ? `<div class="muted small">📍 ${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}</div>` : '';
 }
 
 function pendingBox(notes) {
@@ -483,25 +498,39 @@ async function viewNewNote(lotId) {
     gpsEl.textContent = `📍 ${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)} (±${pos.accuracy} m)${inside ? '' : ' · fuera del lote'}`;
   });
 
+  const isToday = () => !document.getElementById('visit').value || document.getElementById('visit').value === today();
+  document.getElementById('visit').addEventListener('change', () => renderPending());
+
   function renderPending() {
     const el = document.getElementById('pending');
     el.innerHTML = pending.map((m, i) => `
       <div class="pending-item">
         ${m.type === 'photo' ? `<img src="${blobUrl(m.blob)}" alt="">` : m.type === 'audio' ? `<audio controls src="${blobUrl(m.blob)}"></audio>` : `<video src="${blobUrl(m.blob)}" playsinline muted></video>`}
+        <span class="muted small">${m.fileLoc ? '📍 ubicación del archivo' : m.liveLoc && isToday() ? '📍 GPS actual' : 'Sin ubicación'}</span>
         <button class="link danger" data-rm="${i}">Quitar</button>
       </div>`).join('');
     el.querySelectorAll('[data-rm]').forEach((b) => b.addEventListener('click', () => { pending.splice(Number(b.dataset.rm), 1); renderPending(); }));
   }
 
-  async function addMedia(type, blob) {
-    // Cada archivo lleva la ubicación del momento en que se agregó.
-    const pos = (await getPosition(8000)) || notePos;
-    pending.push({ type, blob, mime: blob.type, lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, accuracy: pos ? pos.accuracy : null, createdAt: Date.now() });
+  // Cada archivo guarda su propia ubicación: la que trae adentro (foto o video
+  // sacado antes) o, si no trae, la del GPS en el momento de agregarlo.
+  async function addMedia(type, blob, meta) {
+    const live = (await getPosition(8000)) || notePos;
+    pending.push({
+      type, blob, mime: blob.type,
+      fileLoc: meta && meta.lat != null ? { lat: meta.lat, lng: meta.lng } : null,
+      liveLoc: live,
+      takenAt: meta && meta.takenAt ? meta.takenAt : null,
+      createdAt: Date.now(),
+    });
     renderPending();
   }
 
   document.getElementById('photo').addEventListener('change', async (e) => {
-    for (const f of e.target.files) await addMedia('photo', await compressImage(f));
+    for (const f of e.target.files) {
+      const meta = await photoMeta(f); // antes de comprimir, que borra los metadatos
+      await addMedia('photo', await compressImage(f), meta);
+    }
     e.target.value = '';
   });
 
@@ -509,7 +538,7 @@ async function viewNewNote(lotId) {
     const f = e.target.files[0];
     if (f) {
       if (f.size > 100 * 1024 * 1024) alert('El video es muy pesado (más de 100 MB). Probá con uno más corto.');
-      else await addMedia('video', f);
+      else await addMedia('video', f, await videoMeta(f));
     }
     e.target.value = '';
   });
@@ -565,9 +594,15 @@ async function viewNewNote(lotId) {
     if (!note.text && !note.phenology && !note.pest && !note.disease && !note.weed && !note.actions.length && !note.damage && !pending.length) return alert('La nota está vacía.');
     // Si la nota se carga otro día, la ubicación actual no es la de la visita.
     const sameDayVisit = document.getElementById('visit').value === today() || !document.getElementById('visit').value;
-    if (!sameDayVisit) {
-      note.lat = note.lng = note.accuracy = null;
-      pending.forEach((m) => { m.lat = m.lng = m.accuracy = null; });
+    if (!sameDayVisit) note.lat = note.lng = note.accuracy = null;
+    for (const m of pending) {
+      const loc = m.fileLoc || (sameDayVisit ? m.liveLoc : null);
+      m.lat = loc ? loc.lat : null;
+      m.lng = loc ? loc.lng : null;
+      m.accuracy = loc && loc.accuracy != null ? loc.accuracy : null;
+      m.locSource = m.fileLoc ? 'archivo' : loc ? 'gps' : null;
+      delete m.fileLoc;
+      delete m.liveLoc;
     }
     await db.put('notes', note);
     // Lo escrito a mano queda como opción para la próxima vez.
