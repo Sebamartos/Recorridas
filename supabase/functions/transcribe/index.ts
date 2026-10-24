@@ -11,7 +11,8 @@ const CORS = {
 
 const URL_BASE = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const MODEL = Deno.env.get('GEMINI_MODEL') || 'gemini-flash-latest';
+// Se prueban en orden: si uno tarda o falla, se pasa al siguiente.
+const MODELS = (Deno.env.get('GEMINI_MODEL') || 'gemini-flash-lite-latest,gemini-2.5-flash,gemini-flash-latest').split(',').map((m) => m.trim());
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
@@ -82,24 +83,41 @@ Deno.serve(async (req) => {
 2) "summary": resumen breve y práctico en viñetas cortas (cada una empezando con "• "): estado del cultivo, plagas/enfermedades/malezas observadas con su nivel, y acciones a realizar. Usá términos agronómicos correctos (estados fenológicos, nombres de plagas, productos). Si algo no se menciona, no lo agregues.`;
 
     const mime = (media.mime || 'audio/mp4').split(';')[0];
-    const geminiRes = await step('Gemini', `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': Deno.env.get('GEMINI_API_KEY') ?? '' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ inline_data: { mime_type: mime, data: toBase64(audio) } }, { text: prompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: 'OBJECT',
-            properties: { transcript: { type: 'STRING' }, summary: { type: 'STRING' } },
-            required: ['transcript', 'summary'],
-          },
+    const body = JSON.stringify({
+      contents: [{ parts: [{ inline_data: { mime_type: mime, data: toBase64(audio) } }, { text: prompt }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: { transcript: { type: 'STRING' }, summary: { type: 'STRING' } },
+          required: ['transcript', 'summary'],
         },
-      }),
-    }, 90);
-    const out = await geminiRes.json();
-    const text = out?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return json({ error: `Gemini no devolvió texto: ${JSON.stringify(out).slice(0, 300)}` }, 502);
+      },
+    });
+    const started = Date.now();
+    const errors: string[] = [];
+    let text = '';
+    for (const model of MODELS) {
+      // La función tiene unos 150 s en total: no empezar otro intento si no queda tiempo.
+      const left = Math.floor((130000 - (Date.now() - started)) / 1000);
+      if (left < 15) break;
+      try {
+        const res = await step(`Gemini (${model})`, `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': Deno.env.get('GEMINI_API_KEY') ?? '' },
+          body,
+        }, Math.min(45, left));
+        const out = await res.json();
+        text = out?.candidates?.[0]?.content?.parts?.find((p: { text?: string }) => p.text)?.text ?? '';
+        if (text) break;
+        errors.push(`${model}: sin texto ${JSON.stringify(out).slice(0, 150)}`);
+      } catch (err) {
+        errors.push(String((err as Error).message ?? err).slice(0, 200));
+        // Clave mal cargada: no tiene sentido probar otros modelos.
+        if (/API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(String(err))) break;
+      }
+    }
+    if (!text) return json({ error: errors.join(' | ') || 'Gemini no respondió' }, 502);
     const { transcript, summary } = JSON.parse(text);
 
     await step('guardar', `${URL_BASE}/rest/v1/media?id=eq.${id}`, {

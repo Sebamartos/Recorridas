@@ -245,7 +245,7 @@ export async function mediaUrl(m) {
 
 export async function requestTranscription(mediaId) {
   if (!client) return { error: 'La app no está conectada al servidor' };
-  const timeout = new Promise((resolve) => setTimeout(() => resolve({ error: { message: 'El servidor tardó más de 2 minutos en responder' } }), 120000));
+  const timeout = new Promise((resolve) => setTimeout(() => resolve({ error: { message: 'El servidor tardó más de 2 minutos y medio en responder' } }), 150000));
   const { data, error } = await Promise.race([client.functions.invoke('transcribe', { body: { media_id: mediaId } }), timeout]);
   if (error || !data) {
     // Trae el detalle del error para poder mostrarlo.
