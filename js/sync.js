@@ -244,7 +244,7 @@ export async function mediaUrl(m) {
 // ---------- Transcripción ----------
 
 export async function requestTranscription(mediaId) {
-  if (!client) return null;
+  if (!client) return { error: 'La app no está conectada al servidor' };
   const { data, error } = await client.functions.invoke('transcribe', { body: { media_id: mediaId } });
   if (error || !data) {
     // Trae el detalle del error para poder mostrarlo.

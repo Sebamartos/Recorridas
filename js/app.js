@@ -35,7 +35,7 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
-const APP_VERSION = '12';
+const APP_VERSION = '13';
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -437,7 +437,7 @@ function bindNoteCards() {
       btn.textContent = 'No se pudo transcribir. Reintentar';
       btn.disabled = false;
       btn.nextElementSibling?.classList.contains('transcribe-error') && btn.nextElementSibling.remove();
-      btn.insertAdjacentHTML('afterend', `<div class="muted small transcribe-error">Error: ${esc((res && res.error) || 'sin detalle')}</div>`);
+      btn.insertAdjacentHTML('afterend', `<div class="muted small transcribe-error">Error: ${esc((res && res.error) || (res ? `respuesta inesperada ${JSON.stringify(res).slice(0, 300)}` : 'sin respuesta'))}</div>`);
     }
   }));
   app.querySelectorAll('[data-action]').forEach((box) => box.addEventListener('change', async () => {
