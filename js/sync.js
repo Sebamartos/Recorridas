@@ -79,6 +79,7 @@ async function afterLogin(user) {
 }
 
 export async function signOut() {
+  if (pushSupported()) await disablePush().catch(() => {});
   if (client) await client.auth.signOut().catch(() => {});
   await db.clearAll();
 }
@@ -187,6 +188,8 @@ async function pushTable(name) {
       console.warn('No se pudo subir', name, r.id, res.error.message);
     } else if (name === 'media' && !r.remote && r.type === 'audio' && !r.deleted) {
       requestTranscription(r.id);
+    } else if (name === 'notes' && !r.remote && !r.deleted) {
+      newNotes.add(r.id);
     }
     // Si se editó mientras subía, queda marcado para la próxima vuelta.
     const latest = (await db.get(name, r.id)) || r;
@@ -266,6 +269,67 @@ export async function requestTranscription(mediaId) {
   return data;
 }
 
+// ---------- Avisos (notificaciones) ----------
+
+const newNotes = new Set();
+
+export function pushSupported() {
+  return enabled && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+async function currentSubscription() {
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+export async function pushEnabled() {
+  if (!pushSupported() || Notification.permission !== 'granted') return false;
+  return Boolean(await currentSubscription());
+}
+
+async function callNotify(body) {
+  const { data, error } = await client.functions.invoke('notify', { body });
+  if (error) {
+    let detail = error.message;
+    try { detail = (await error.context.json()).error || detail; } catch {}
+    throw new Error(detail);
+  }
+  return data;
+}
+
+// Tiene que llamarse desde un toque del usuario (lo exige el iPhone).
+export async function enablePush() {
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') throw new Error('No diste permiso para los avisos. Se cambia en Ajustes del iPhone → Notificaciones → Recorridas.');
+  const { publicKey } = await callNotify({ action: 'key' });
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    // Si cambió la clave del servidor, hay que volver a suscribirse.
+    const current = sub.options && sub.options.applicationServerKey;
+    const same = current && btoa(String.fromCharCode(...new Uint8Array(current))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') === publicKey;
+    if (!same) { await sub.unsubscribe(); sub = null; }
+  }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64urlToBytes(publicKey) });
+  await callNotify({ action: 'subscribe', subscription: sub.toJSON() });
+}
+
+export async function disablePush() {
+  const sub = await currentSubscription();
+  if (!sub) return;
+  await callNotify({ action: 'unsubscribe', endpoint: sub.endpoint }).catch(() => {});
+  await sub.unsubscribe();
+}
+
+export async function testPush() {
+  return callNotify({ action: 'test' });
+}
+
+function base64urlToBytes(text) {
+  const s = atob(text.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((text.length + 3) % 4));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+
 // ---------- Ciclo completo ----------
 
 export async function syncNow() {
@@ -281,6 +345,11 @@ export async function syncNow() {
       const { data } = await client.auth.getSession();
       if (!data.session) throw new Error('La sesión venció. Volvé a iniciar sesión desde Ajustes.');
       for (const name of ['campaigns', 'lots', 'notes', 'media']) await pushTable(name);
+      // Con la nota y sus archivos ya subidos, se avisa a los demás.
+      for (const id of newNotes) {
+        newNotes.delete(id);
+        client.functions.invoke('notify', { body: { action: 'note', note_id: id } }).catch(() => {});
+      }
       let changed = 0;
       for (const name of ['campaigns', 'lots', 'notes', 'media']) changed += await pullTable(name);
       changed += await downloadMedia();

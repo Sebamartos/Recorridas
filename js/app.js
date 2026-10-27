@@ -36,7 +36,7 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
-const APP_VERSION = '21';
+const APP_VERSION = '22';
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -891,6 +891,17 @@ async function viewSettings() {
             <button id="logout" class="btn grow">Cerrar sesión</button>
           </div>
         </section>
+        <section class="box" id="push">
+          <strong>Avisos</strong>
+          ${sync.pushSupported() ? `
+            <label class="action"><input id="push-on" type="checkbox"> Avisarme cuando alguien cargue una nota</label>
+            <div class="muted small">Te llega un aviso en este dispositivo cuando otro usuario carga una nota en un lote que vos ves.</div>
+            <button id="push-test" class="btn" hidden>Probar aviso</button>
+            <div id="push-msg" class="muted small"></div>` : `
+            <div class="muted small">${/iPhone|iPad/.test(navigator.userAgent)
+              ? 'Para recibir avisos en el iPhone, abrí la app desde el ícono de la pantalla de inicio (no desde Safari). Necesita iOS 16.4 o más nuevo.'
+              : 'Este navegador no permite avisos.'}</div>`}
+        </section>
         ${admin ? `<section class="box" id="users"><strong>Usuarios y lotes que ve cada uno</strong><div class="muted">Cargando…</div></section>` : ''}
       ` : '<p class="muted">Las notas se guardan solo en este dispositivo.</p>'}
       <p class="muted">Almacenamiento: ${usage || 'sin datos'}.</p>
@@ -926,6 +937,39 @@ async function viewSettings() {
     render();
   });
   if (admin) renderUsers(campaign);
+  bindPush();
+}
+
+async function bindPush() {
+  const box = document.getElementById('push-on');
+  if (!box) return;
+  const test = document.getElementById('push-test');
+  const msg = document.getElementById('push-msg');
+  const on = await sync.pushEnabled();
+  box.checked = on;
+  test.hidden = !on;
+  box.addEventListener('change', async () => {
+    box.disabled = true;
+    msg.textContent = box.checked ? 'Activando…' : 'Desactivando…';
+    try {
+      if (box.checked) { await sync.enablePush(); msg.textContent = 'Avisos activados en este dispositivo.'; }
+      else { await sync.disablePush(); msg.textContent = 'Avisos desactivados.'; }
+    } catch (err) {
+      box.checked = !box.checked;
+      msg.textContent = `No se pudo: ${err.message || err}`;
+    }
+    test.hidden = !box.checked;
+    box.disabled = false;
+  });
+  test.addEventListener('click', async () => {
+    msg.textContent = 'Enviando…';
+    try {
+      const r = await sync.testPush();
+      msg.textContent = r.sent ? 'Aviso enviado. Debería llegarte en unos segundos.' : 'No se pudo enviar el aviso. Probá desactivar y volver a activar.';
+    } catch (err) {
+      msg.textContent = `No se pudo: ${err.message || err}`;
+    }
+  });
 }
 
 async function renderUsers(campaign) {
