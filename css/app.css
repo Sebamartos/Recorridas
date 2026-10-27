@@ -183,3 +183,4 @@ label > input, label > textarea, label > select { color: var(--text); font-size:
 .bar-logo { width: 40px; height: 40px; border-radius: 10px; background: #fff; flex: none; }
 .login-logo { display: block; width: 100%; max-width: 300px; margin: 8px auto 4px; padding: 12px; border-radius: 14px; background: #fff; }
 .home-logo { display: block; height: 76px; width: auto; max-width: 100%; margin: 0 auto; padding: 6px 14px; border-radius: 12px; background: #fff; }
+a.link { text-decoration: none; color: var(--green-2); font-weight: 600; }

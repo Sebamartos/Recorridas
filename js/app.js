@@ -35,7 +35,7 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
-const APP_VERSION = '19';
+const APP_VERSION = '20';
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -333,7 +333,8 @@ function noteCard(n, media) {
     <article class="card" data-note="${n.id}">
       <header>
         <span>${visitLabel(n)}</span>
-        <span class="muted">${esc(n.author)}</span>
+        <span class="muted">${esc(n.author)}${n.editedAt ? ` · editada${n.editedBy && n.editedBy !== n.author ? ` por ${esc(n.editedBy)}` : ''}` : ''}</span>
+        ${canDelete(n) ? `<a class="link" href="#/nota/editar/${n.id}">Editar</a>` : ''}
         ${canDelete(n) ? `<button class="link danger" data-delete="${n.id}" aria-label="Borrar nota">Borrar</button>` : ''}
         ${n.dirty && sync.enabled ? '<span class="muted small" title="Falta sincronizar">⏳</span>' : ''}
       </header>
@@ -417,7 +418,11 @@ function visitTimestamp(iso) {
 }
 
 function today() {
-  const d = new Date();
+  return isoDay(Date.now());
+}
+
+function isoDay(ts) {
+  const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -468,7 +473,7 @@ function bindNoteCards() {
   }));
 }
 
-// ---------- Nueva nota ----------
+// ---------- Nueva nota / editar nota ----------
 
 async function compressImage(file, maxSide = 1600) {
   try {
@@ -484,23 +489,34 @@ async function compressImage(file, maxSide = 1600) {
   }
 }
 
-async function viewNewNote(lotId) {
+async function viewEditNote(noteId) {
+  const note = await db.get('notes', noteId);
+  if (!note || note.deleted || !canDelete(note)) { location.hash = '#/'; return; }
+  await viewNewNote(note.lotId, note);
+}
+
+async function viewNewNote(lotId, editing = null) {
   const lot = await db.get('lots', lotId);
   if (!lot || lot.deleted) { location.hash = '#/'; return; }
   const me = await author();
   const pending = []; // { type, blob, mime, lat, lng, accuracy, createdAt }
+  // Al editar: archivos que ya tenía la nota, y los que se marcan para quitar.
+  const existing = editing ? live(await db.byIndex('media', 'noteId', editing.id)).sort((a, b) => a.createdAt - b.createdAt) : [];
+  const removed = new Set();
   let notePos = null;
   let recorder = null;
+  const visitValue = editing ? isoDay(when(editing)) : today();
+  const back = `#/lote/${lot.id}`;
 
   app.innerHTML = `
     <header class="bar">
-      <a class="icon-btn" href="#/lote/${lot.id}" aria-label="Cancelar">‹</a>
-      <h1>Nueva nota · ${esc(lot.name)}</h1>
+      <a class="icon-btn" href="${back}" aria-label="Cancelar">‹</a>
+      <h1>${editing ? 'Editar nota' : 'Nueva nota'} · ${esc(lot.name)}</h1>
     </header>
     <main class="page form">
-      <div id="gps" class="muted small">📍 Buscando ubicación…</div>
+      <div id="gps" class="muted small">${editing ? '' : '📍 Buscando ubicación…'}</div>
       <label>Fecha de la visita
-        <input id="visit" type="date" value="${today()}" max="${today()}">
+        <input id="visit" type="date" value="${visitValue}" max="${today()}">
       </label>
       <label>Lo que viste
         <textarea id="text" rows="5" placeholder="Estado del cultivo, plagas, malezas, humedad…"></textarea>
@@ -539,8 +555,9 @@ async function viewNewNote(lotId) {
         <label class="btn">🎥 Video<input id="video" type="file" accept="video/*" hidden></label>
         <button id="rec" class="btn">🎙️ Grabar audio</button>
       </div>
+      <div id="existing" class="pending"></div>
       <div id="pending" class="pending"></div>
-      <button id="save" class="btn primary">Guardar nota</button>
+      <button id="save" class="btn primary">${editing ? 'Guardar cambios' : 'Guardar nota'}</button>
     </main>`;
 
   const cropOf = () => CROPS[document.getElementById('crop').value];
@@ -555,11 +572,44 @@ async function viewNewNote(lotId) {
     document.getElementById('phenology').innerHTML = '<option value="">—</option>' +
       (crop ? crop.phenology.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join('') : '');
   }
+  if (editing) {
+    const $ = (id) => document.getElementById(id);
+    $('text').value = editing.text || '';
+    $('crop').value = editing.crop || '';
+    $('pest').value = editing.pest || '';
+    $('disease').value = editing.disease || '';
+    $('weed').value = editing.weed || '';
+    $('damage').value = editing.damage || '';
+    $('actions').value = (editing.actions || []).map((a) => a.text).join('\n');
+    $('due').value = editing.due || '';
+  }
   fillCropLists();
+  if (editing && editing.phenology) {
+    const sel = document.getElementById('phenology');
+    if (![...sel.options].some((o) => o.value === editing.phenology)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(editing.phenology)}">${esc(editing.phenology)}</option>`);
+    sel.value = editing.phenology;
+  }
   document.getElementById('crop').addEventListener('change', fillCropLists);
 
+  function renderExisting() {
+    const el = document.getElementById('existing');
+    el.innerHTML = existing.map((m) => `
+      <div class="pending-item" style="${removed.has(m.id) ? 'opacity:.4' : ''}">
+        ${m.type === 'photo' ? `<img src="${mediaSrc(m)}"${remoteAttr(m)} alt="">` : m.type === 'audio' ? `<audio controls src="${mediaSrc(m)}"${remoteAttr(m)}></audio>` : `<video src="${mediaSrc(m)}"${remoteAttr(m)} playsinline muted></video>`}
+        <span class="muted small">${removed.has(m.id) ? 'Se va a quitar' : m.lat != null ? '📍 con ubicación' : ''}</span>
+        <button class="link ${removed.has(m.id) ? '' : 'danger'}" data-ex="${m.id}">${removed.has(m.id) ? 'Deshacer' : 'Quitar'}</button>
+      </div>`).join('');
+    el.querySelectorAll('[data-ex]').forEach((b) => b.addEventListener('click', () => {
+      const id = b.dataset.ex;
+      if (removed.has(id)) removed.delete(id); else removed.add(id);
+      renderExisting();
+    }));
+    hydrateMedia();
+  }
+  renderExisting();
+
   const gpsEl = document.getElementById('gps');
-  getPosition().then((pos) => {
+  if (!editing) getPosition().then((pos) => {
     notePos = pos;
     if (!pos) { gpsEl.textContent = '📍 Sin ubicación (revisá los permisos de GPS)'; return; }
     const inside = containsPoint(lot.geometry, pos.lat, pos.lng);
@@ -639,6 +689,7 @@ async function viewNewNote(lotId) {
 
   document.getElementById('save').addEventListener('click', async () => {
     if (recorder && recorder.state === 'recording') return alert('Primero detené la grabación.');
+    if (editing) return saveEdit();
     const note = {
       id: db.uid(),
       lotId: lot.id,
@@ -684,6 +735,55 @@ async function viewNewNote(lotId) {
     toast('Nota guardada');
     location.hash = `#/lote/${lot.id}`;
   });
+
+  async function saveEdit() {
+    const note = (await db.get('notes', editing.id)) || editing;
+    const visit = document.getElementById('visit').value;
+    // Las acciones que ya existían conservan si estaban hechas.
+    const previous = note.actions || [];
+    const actions = document.getElementById('actions').value.split('\n').map((t) => t.trim()).filter(Boolean)
+      .map((text) => previous.find((a) => a.text === text) || { id: db.uid(), text, done: false });
+    Object.assign(note, {
+      visitAt: visit && visit !== visitValue ? visitTimestamp(visit) : note.visitAt,
+      text: document.getElementById('text').value.trim(),
+      phenology: document.getElementById('phenology').value.trim(),
+      crop: document.getElementById('crop').value,
+      pest: document.getElementById('pest').value.trim(),
+      disease: document.getElementById('disease').value.trim(),
+      weed: document.getElementById('weed').value.trim(),
+      actions,
+      due: document.getElementById('due').value,
+      damage: document.getElementById('damage').value,
+      editedAt: Date.now(),
+      editedBy: me,
+    });
+    const keeps = existing.filter((m) => !removed.has(m.id)).length;
+    if (!note.text && !note.phenology && !note.pest && !note.disease && !note.weed && !note.actions.length && !note.damage && !keeps && !pending.length) {
+      return alert('La nota quedaría vacía. Si no la querés, usá Borrar.');
+    }
+    await db.save('notes', note);
+    await addCustomOption('pests', note.pest);
+    await addCustomOption('diseases', note.disease);
+    await addCustomOption('weeds', note.weed);
+    for (const id of removed) {
+      const m = await db.get('media', id);
+      if (m) { m.deleted = true; m.blob = null; await db.save('media', m); }
+    }
+    const sameDayVisit = !visit || visit === today();
+    for (const m of pending) {
+      const loc = m.fileLoc || (sameDayVisit ? m.liveLoc : null);
+      m.lat = loc ? loc.lat : null;
+      m.lng = loc ? loc.lng : null;
+      m.accuracy = loc && loc.accuracy != null ? loc.accuracy : null;
+      m.locSource = m.fileLoc ? 'archivo' : loc ? 'gps' : null;
+      delete m.fileLoc;
+      delete m.liveLoc;
+      await db.save('media', { id: db.uid(), noteId: note.id, lotId: lot.id, ...m });
+    }
+    afterChange();
+    toast('Cambios guardados');
+    location.hash = back;
+  }
 }
 
 // ---------- Ingreso ----------
@@ -883,6 +983,7 @@ async function render() {
     if (sync.enabled && !currentProfile) await viewLogin();
     else if (parts[0] === 'lote' && parts[1]) await viewLot(parts[1]);
     else if (parts[0] === 'nota' && parts[1] === 'nueva' && parts[2]) await viewNewNote(parts[2]);
+    else if (parts[0] === 'nota' && parts[1] === 'editar' && parts[2]) await viewEditNote(parts[2]);
     else if (parts[0] === 'ajustes') await viewSettings();
     else await viewHome();
   } catch (err) {

@@ -1,6 +1,6 @@
 // Guarda la app en el dispositivo para que abra sin señal.
 // Subí VERSION en cada cambio para que los teléfonos tomen la versión nueva.
-const VERSION = 'v19';
+const VERSION = 'v20';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const MAX_TILES = 3000;
