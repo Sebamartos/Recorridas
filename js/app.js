@@ -35,7 +35,7 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
-const APP_VERSION = '18';
+const APP_VERSION = '19';
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -535,8 +535,8 @@ async function viewNewNote(lotId) {
         <input id="due" type="date">
       </label>
       <div class="media-buttons">
-        <label class="btn">📷 Foto<input id="photo" type="file" accept="image/*" capture="environment" multiple hidden></label>
-        <label class="btn">🎥 Video<input id="video" type="file" accept="video/*" capture="environment" hidden></label>
+        <label class="btn">📷 Foto<input id="photo" type="file" accept="image/*" multiple hidden></label>
+        <label class="btn">🎥 Video<input id="video" type="file" accept="video/*" hidden></label>
         <button id="rec" class="btn">🎙️ Grabar audio</button>
       </div>
       <div id="pending" class="pending"></div>
