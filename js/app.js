@@ -4,6 +4,7 @@ import { CROPS, WEEDS, cropKey, cropName } from './crops.js';
 import { combo, addCustomOption } from './combo.js';
 import { photoMeta, videoMeta } from './mediageo.js';
 import * as sync from './sync.js';
+import { editPhoto } from './photoedit.js';
 
 const L = window.L;
 const app = document.getElementById('app');
@@ -35,7 +36,7 @@ function cleanup() {
   if (activeMap) { activeMap.stop(); activeMap.remove(); activeMap = null; }
 }
 
-const APP_VERSION = '20';
+const APP_VERSION = '21';
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -503,6 +504,7 @@ async function viewNewNote(lotId, editing = null) {
   // Al editar: archivos que ya tenía la nota, y los que se marcan para quitar.
   const existing = editing ? live(await db.byIndex('media', 'noteId', editing.id)).sort((a, b) => a.createdAt - b.createdAt) : [];
   const removed = new Set();
+  const replaced = new Map(); // id de foto existente → foto editada
   let notePos = null;
   let recorder = null;
   const visitValue = editing ? isoDay(when(editing)) : today();
@@ -595,14 +597,25 @@ async function viewNewNote(lotId, editing = null) {
     const el = document.getElementById('existing');
     el.innerHTML = existing.map((m) => `
       <div class="pending-item" style="${removed.has(m.id) ? 'opacity:.4' : ''}">
-        ${m.type === 'photo' ? `<img src="${mediaSrc(m)}"${remoteAttr(m)} alt="">` : m.type === 'audio' ? `<audio controls src="${mediaSrc(m)}"${remoteAttr(m)}></audio>` : `<video src="${mediaSrc(m)}"${remoteAttr(m)} playsinline muted></video>`}
+        ${m.type === 'photo' ? (replaced.has(m.id) ? `<img src="${blobUrl(replaced.get(m.id))}" alt="">` : `<img src="${mediaSrc(m)}"${remoteAttr(m)} alt="">`) : m.type === 'audio' ? `<audio controls src="${mediaSrc(m)}"${remoteAttr(m)}></audio>` : `<video src="${mediaSrc(m)}"${remoteAttr(m)} playsinline muted></video>`}
         <span class="muted small">${removed.has(m.id) ? 'Se va a quitar' : m.lat != null ? '📍 con ubicación' : ''}</span>
+        ${m.type === 'photo' && !removed.has(m.id) ? `<button class="link" data-edit-ex="${m.id}">✏️ Editar</button>` : ''}
         <button class="link ${removed.has(m.id) ? '' : 'danger'}" data-ex="${m.id}">${removed.has(m.id) ? 'Deshacer' : 'Quitar'}</button>
       </div>`).join('');
     el.querySelectorAll('[data-ex]').forEach((b) => b.addEventListener('click', () => {
       const id = b.dataset.ex;
       if (removed.has(id)) removed.delete(id); else removed.add(id);
       renderExisting();
+    }));
+    el.querySelectorAll('[data-edit-ex]').forEach((b) => b.addEventListener('click', async () => {
+      const m = existing.find((x) => x.id === b.dataset.editEx);
+      let blob = replaced.get(m.id) || (await db.get('media', m.id))?.blob;
+      if (!blob) {
+        try { blob = await (await fetch(await sync.mediaUrl(m))).blob(); } catch { blob = null; }
+      }
+      if (!blob) return alert('Para editar esta foto necesitás conexión.');
+      const out = await editPhoto(blob);
+      if (out) { replaced.set(m.id, out); renderExisting(); }
     }));
     hydrateMedia();
   }
@@ -625,8 +638,14 @@ async function viewNewNote(lotId, editing = null) {
       <div class="pending-item">
         ${m.type === 'photo' ? `<img src="${blobUrl(m.blob)}" alt="">` : m.type === 'audio' ? `<audio controls src="${blobUrl(m.blob)}"></audio>` : `<video src="${blobUrl(m.blob)}" playsinline muted></video>`}
         <span class="muted small">${m.fileLoc ? '📍 ubicación del archivo' : m.liveLoc && isToday() ? '📍 GPS actual' : 'Sin ubicación'}</span>
+        ${m.type === 'photo' ? `<button class="link" data-edit="${i}">✏️ Editar</button>` : ''}
         <button class="link danger" data-rm="${i}">Quitar</button>
       </div>`).join('');
+    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', async () => {
+      const m = pending[Number(b.dataset.edit)];
+      const out = await editPhoto(m.blob);
+      if (out) { m.blob = out; m.mime = out.type; renderPending(); }
+    }));
     el.querySelectorAll('[data-rm]').forEach((b) => b.addEventListener('click', () => { pending.splice(Number(b.dataset.rm), 1); renderPending(); }));
   }
 
@@ -768,6 +787,17 @@ async function viewNewNote(lotId, editing = null) {
     for (const id of removed) {
       const m = await db.get('media', id);
       if (m) { m.deleted = true; m.blob = null; await db.save('media', m); }
+    }
+    // Una foto editada se guarda como archivo nuevo (con la misma ubicación) y reemplaza a la original.
+    for (const [id, blob] of replaced) {
+      if (removed.has(id)) continue;
+      const old = await db.get('media', id);
+      if (!old) continue;
+      const { id: _id, path, remote, dirty, rev, deleted, ...meta } = old;
+      await db.save('media', { ...meta, id: db.uid(), blob, mime: blob.type, edited: true });
+      old.deleted = true;
+      old.blob = null;
+      await db.save('media', old);
     }
     const sameDayVisit = !visit || visit === today();
     for (const m of pending) {

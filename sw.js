@@ -1,6 +1,6 @@
 // Guarda la app en el dispositivo para que abra sin señal.
 // Subí VERSION en cada cambio para que los teléfonos tomen la versión nueva.
-const VERSION = 'v20';
+const VERSION = 'v21';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const MAX_TILES = 3000;
@@ -18,6 +18,7 @@ const APP_FILES = [
   'js/mediageo.js',
   'js/sync.js',
   'js/config.js',
+  'js/photoedit.js',
   'vendor/supabase/supabase.js',
   'vendor/leaflet/leaflet.css',
   'vendor/leaflet/leaflet.js',
